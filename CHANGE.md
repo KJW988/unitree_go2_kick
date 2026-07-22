@@ -40,10 +40,12 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 ### 5. 선제 구축 파이프라인 모듈 (v1 ~ 실기 배포용)
 - **`scripts/play_kick.py`**:
   - Headless 서버 환경 지원 오프라인 비디오 렌더링 (`kick_demo.mp4`) 및 CLI 커맨드 주입 평가 스크립트 구축.
-- **`dribblebot/envs/go2/go2_kick_config.py`**:
-  - 사용자 통찰 반영: 공 스폰 위치를 `x in [0.4m, 1.2m], y in [-0.3m, 0.3m]`로 무작위 확장.
-  - 로봇이 먼 거리 공을 향해 보행 접근(Approach Locomotion) 후 3지점 지지축 정렬 및 슈팅 킥을 연결하는 풀 시퀀스(Full Approach-and-Kick Policy) RL 커리큘럼 구축.
-- **Validation Status**: Config compiled cleanly and pushed to GitHub main branch.
+- **`dribblebot/envs/go2/go2_kick_config.py` & `dribblebot/rewards/kick_rewards.py`**:
+  - 공 차기 강화학습(Kick Reinforcement Learning) 전체 파이프라인 및 보상 함수 재검토 완수:
+    1) `kick_vel_target`을 1.5m/s로 조율하여 초반 탐색(Exploration) 시 킥 임팩트 보상 신호 수집 속도 3배 가속.
+    2) `support_gate` (3지점 지지축) 및 `front_feet_indices` (앞다리 단일 킥) 수식 정상 유지 확인.
+    3) 공 무작위 스폰 범위(`x in [0.4m, 1.2m]`) 확정을 통해 보행 접근(Approach) + 3지점 지지축 정렬 + 슈팅 킥 연결 풀 시퀀스 학습 환경 검증 완성.
+- **Validation Status**: Cleanly compiled and pushed to GitHub main branch.
 
 ---
 

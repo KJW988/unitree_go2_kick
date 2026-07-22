@@ -66,7 +66,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.sigma_rew_neg = 5
     _.tracking_sigma = 0.25
     _.kick_quality_threshold = 0.6   # r_kick(0~1)이 이 값 넘으면 Pursue&Strike -> Hold 전환 (초반 학습 가속)
-    _.kick_vel_target = 2.0          # m/s. 초반 크레딧 할당 신호 포착용 목표 공 속도
+    _.kick_vel_target = 1.5          # m/s. 초반 신호 포착용 목표 공 속도 (1.5m/s로 초반 킥 탐색 가속)
     _.soft_dof_pos_limit = 0.9
     _.base_height_target = 0.34
 
