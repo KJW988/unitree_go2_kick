@@ -34,11 +34,11 @@ class Go2LidarBallDetector:
         return points_lidar @ cls.R_LIDAR2BASE.T + cls.T_LIDAR2BASE
 
     def filter_roi_base(self, points_base: np.ndarray) -> np.ndarray:
-        """base 좌표계 기준 전방 ROI 범위 필터링"""
+        """base 좌표계 기준 전방 ROI 범위 필터링 (로봇 앞다리 영역 x < 0.35m 제외)"""
         mask = (
-            (points_base[:, 0] >= 0.1) & (points_base[:, 0] <= 2.5) &
+            (points_base[:, 0] >= 0.35) & (points_base[:, 0] <= 2.5) &
             (points_base[:, 1] >= -0.8) & (points_base[:, 1] <= 0.8) &
-            (points_base[:, 2] >= -0.40) & (points_base[:, 2] <= 0.10)
+            (points_base[:, 2] >= -0.32) & (points_base[:, 2] <= 0.10)
         )
         return points_base[mask]
 
