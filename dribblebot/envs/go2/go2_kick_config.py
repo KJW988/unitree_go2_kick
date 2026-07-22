@@ -92,9 +92,11 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.dribbling_robot_ball_pos = 4.0
     _.dribbling_robot_ball_yaw = 4.0
     _.dribbling_robot_ball_vel = 0.5
-    # 킥 전용 신규 항 (kick_rewards.py) - dribbling_ball_vel(4.0)과 같은 자릿수에서 시작
+    # 킥 전용 신규 항 (kick_rewards.py)
     _.kicking_ball_vel = 3.0
     _.kick_contact = 3.0
+    _.kick_hold = 2.0                # 킥 임팩트 성공 직후 자리에 멈춰 자세를 안정화(Hold)하는 2단계 보상
+
     # 접근 보행 시 정갈한 4족 교차 보행(Trot Gait) 형성 보상 (soccer_rewards.py 내장 함수)
     _.tracking_contacts_shaped_force = 1.0
     _.tracking_contacts_shaped_vel = 1.0

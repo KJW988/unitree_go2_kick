@@ -40,10 +40,10 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 ### 5. 선제 구축 파이프라인 모듈 (v1 ~ 실기 배포용)
 - **`scripts/play_kick.py`**:
   - Headless 서버 환경 지원 오프라인 비디오 렌더링 (`kick_demo.mp4`) 및 CLI 커맨드 주입 평가 스크립트 구축.
-- **`dribblebot/envs/go2/go2_kick_config.py` & `dribblebot/rewards/soccer_rewards.py`**:
+- **`dribblebot/envs/go2/go2_kick_config.py` & `dribblebot/rewards/kick_rewards.py`**:
+  - 사용자 지적 반영: 킥 임팩트 직후 자세 안정화 2단계 보상인 `_.kick_hold = 2.0` 원상 복원 완료.
   - 공 접근 보행 시 어설픈 기어가기 모션을 방지하는 정갈한 4족 교차 보행(Trot Gait) 형성 보상 (`tracking_contacts_shaped_force = 1.0`, `tracking_contacts_shaped_vel = 1.0`) 활성화 반영.
   - `kick_vel_target`을 1.5m/s로 조율하여 초반 탐색(Exploration) 시 킥 임팩트 보상 신호 수집 속도 3배 가속.
-  - `support_gate` (3지점 지지축) 및 `front_feet_indices` (앞다리 단일 킥) 수식 정상 유지 확인.
 - **Validation Status**: Cleanly compiled and pushed to GitHub main branch.
 
 ---
