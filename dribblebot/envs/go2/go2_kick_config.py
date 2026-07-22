@@ -49,9 +49,9 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.fix_base_link = False
 
     _ = Cnfg.ball
-    _.ball_init_pos = [0.5, 0.0, 0.09]   # 로봇 정면 0.5m, 공 반지름(0.0889)만큼 지면 위
-    _.mass = 0.318
-    _.radius = 0.0889
+    _.ball_init_pos = [0.5, 0.0, 0.11]   # 로봇 정면 0.5m, 공식 5호 축구공 반지름(0.11m) 지면 위
+    _.mass = 0.43                        # 공식 5호 축구공 질량 (430g)
+    _.radius = 0.11                      # 공식 5호 축구공 반지름 (11cm, 지름 22cm)
     _.init_pos_range = [0.10, 0.10, 0.0]   # 로봇 정면 x in [0.4m, 0.6m] 전방 안전지대
     _.init_vel_range = [0.0, 0.0, 0.0]
     _.pos_reset_prob = 0.0
@@ -73,17 +73,17 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _ = Cnfg.reward_scales
     _.base_height = -2.0             # 고개 쳐박기/몸통 쳐짐 방지 (목표 높이 0.34m 유지)
     _.pitch_forward_penalty = -5.0   # 상체 전방 숙임/꼬꾸라짐 억제 (무게중심 뒤쪽 유지)
-    _.stance_legs_support = 1.0        # 킥 다리를 제외한 3개 다리(반대쪽 앞다리+뒷다리2개) 단단한 지지 보상
+    _.stance_legs_support = 3.0        # 킥 다리를 제외한 3개 다리(반대쪽 앞다리+뒷다리2개) 단단한 지지 보상 (허우적거림 방지)
     _.lin_vel_z = -2.0               # 상하 요동 억제
     _.ang_vel_xy = -0.05             # 롤/피치 흔들림 억제
     _.ang_vel_z = -0.1               # 무의미한 제자리 팽이 회전 억제
-    _.feet_slip = -0.04              # 지지 발 바닥 미끄러짐 억제
-    _.action_smoothness_2 = -0.001   # 액션 떨림/갑작스러운 튐 부드럽게 억제
+    _.feet_slip = -0.08              # 지지 발 바닥 미끄러짐 억제
+    _.action_smoothness_2 = -0.002   # 액션 떨림/갑작스러운 튐 부드럽게 억제
     _.feet_air_time = 0.0
     # 정규화/안정성 항 - go1_config.py 기본값 그대로
     _.torques = -0.0001
-    _.action_rate = -0.01
-    _.dof_acc = -2.5e-7              # 관절 급격한 가속도/발작 억제 (모터열화 방지 및 부드러운 스윙)
+    _.action_rate = -0.05            # 액션 변화율 감점 상향 (다리 4개 허우적거림 억제)
+    _.dof_acc = -5.0e-7              # 관절 급격한 가속도/발작 억제 (모터열화 방지 및 부드러운 스윙)
     _.dof_pos_limits = -10.0
     _.orientation = -5.0
     _.collision = -5.0
@@ -93,8 +93,8 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.dribbling_robot_ball_yaw = 4.0
     _.dribbling_robot_ball_vel = 0.5
     # 킥 전용 신규 항 (kick_rewards.py) - dribbling_ball_vel(4.0)과 같은 자릿수에서 시작
-    _.kicking_ball_vel = 4.0
-    _.kick_contact = 1.0
+    _.kicking_ball_vel = 3.0
+    _.kick_contact = 3.0
     _.kick_hold = 2.0
     # 드리블 태스크와 동일하게 base 속도 직접 트래킹은 끔 (로코모션은 부수적으로만 발생)
     _.tracking_lin_vel = 0.0
