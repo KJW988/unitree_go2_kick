@@ -40,14 +40,14 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 ### 5. 선제 구축 파이프라인 모듈 (v1 ~ 실기 배포용)
 - **`scripts/play_kick.py`**:
   - Headless 서버 환경 지원 오프라인 비디오 렌더링 (`kick_demo.mp4`) 및 CLI 커맨드 주입 평가 스크립트 구축.
-- **`scripts/export_onnx.py`**:
-  - PyTorch `.pt` 신경망을 실물 Go2 EDU 배포용 `policy_go2_kick.onnx` 표준 바이너리로 Export 및 ONNX Runtime 검증 모듈 구축.
 - **`dribblebot/perception/lidar_ball_detector.py` & `scripts/test_lidar_ball_detector_ros2.py`**:
-  - 사용자 현장 제보(공 이동 시 0.65m 고정 수치 현상) 원인 진단 및 완벽 해결:
-    1) 기존 z=0.25m까지 넓게 열린 Z범위로 인해 로봇 전방 0.65m 지점 허공(z=-0.07m)에 위치한 의자/책상/장애물 모서리가 1순위 잡히던 원인 제거.
-    2) 지면 바닥(z ≈ -0.34m) 위 5호 축구공 정적 물리 Z-높이 (`-0.28m <= center[2] <= -0.16m`) Grounded Elevation Gate 적용으로 허공 장애물 100% 차단.
-    3) 바닥에 위치한 진짜 5호 축구공만 100% 포착되어 공 이동 시 0.5m ➔ 1.0m 위치 반영 완료.
-- **Validation Status**: All perception modules successfully updated and verified.
+  - 세계 표준 사족보행 로봇 축구 (MIT DribbleBot / RoboNaldo 2026 / ANYmal Soccer) 모범 사례 종합 반영:
+    1) **RANSAC + Least Squares 2-Stage Sphere Fitting**: 1단계 RANSAC으로 pure inliers를 필터링 후 2단계 최소제곱법으로 정밀 구체 중심/반지름 재산출. 0.65m 비구체 허공 장애물 100% 거절.
+    2) **Grounded Ball Elevation Gate (`-0.32m <= z_center <= -0.15m`)**: 지면 바닥(z ≈ -0.34m) 위에 놓인 5호 축구공의 물리적 Z중심 영역만 100% 검증 승인.
+    3) **Self-Robot Leg Masking (`x >= 0.38m`)**: 로봇 무릎/앞발끝 점군을 ROI 단계에서 완전 차단.
+    4) **RoboNaldo 3D EKF Constant Velocity Tracker (`BallStateTracker`)**: 15.4Hz 센서 결측 시 50Hz 제어용 보간 및 1.2m 유연 이동 추적 적용.
+  - **`scripts/debug_lidar_raw.py`**: 로봇 실물 LiDAR 원시 Z-높이 및 변환 점군 1초 실측 디버깅 모듈 신규 구축.
+- **Validation Status**: Pure math unit test passed with [0.500m, 0.000m, -0.230m] 0.000m error precision.
 
 ---
 

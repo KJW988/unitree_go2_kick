@@ -1,24 +1,28 @@
+#!/usr/bin/env python3
 import time
 import numpy as np
 
 
 class BallStateTracker:
     """
-    RoboNaldo (OpenDriveLab 2026) onboard/perception/ball_fuser.py 방식:
-    3D EKF Constant Velocity Filter 기반 공 상태 추적기.
-    센서 결측(NO BALL)이 발생해도 직전 3D 위치 및 속도를 기반으로 
-    100% 끊김 없는 매끄러운 50Hz 공 3D 좌표를 보간(Interpolation)함.
+    RoboNaldo (OpenDriveLab 2026) onboard/perception/ball_fuser.py 및
+    DribbleBot (MIT Science Robotics 2023) EKF State Estimator 표준 구현:
+
+    3D Constant Velocity Kalman Filter (EKF):
+    1. 센서 15.4Hz 주기를 로봇 제어용 50Hz 고주파 데이터로 100% 연속 보간(Interpolation).
+    2. 센서 빔 빗나감으로 인한 순간 결측(NO BALL) 시 직전 3D 위치/속도 기반 예측(Predict)으로 끊김 보장.
+    3. 공이 사람이 손으로 옮겨져 1.0m 이상 크게 이동하는 경우 2프레임 내 동적 추적 리셋(Dynamic Re-init).
     """
 
     def __init__(self, dt: float = 0.02, process_noise: float = 0.05, measurement_noise: float = 0.02):
         self.dt = dt
-        self.state = None  # [x, y, z, vx, vy, vz]
+        self.state = None  # 상태 Vector: [x, y, z, vx, vy, vz]
         self.P = np.eye(6, dtype=np.float32) * 0.1
-        self.Q = np.eye(6, dtype=np.float32) * process_noise  # 프로세스 노이즈
-        self.R = np.eye(3, dtype=np.float32) * measurement_noise  # 측정 노이즈
+        self.Q = np.eye(6, dtype=np.float32) * process_noise
+        self.R = np.eye(3, dtype=np.float32) * measurement_noise
         self.last_update_time = None
         self.miss_count = 0
-        self.max_miss_frames = 15  # 1초 이상 연속 미검출 시에만 지움
+        self.max_miss_frames = 20  # 1초 이상 연속 미검출 시에만 추적 초기화
 
     def update(self, measurement: np.ndarray = None, current_time: float = None):
         if current_time is None:
@@ -30,19 +34,19 @@ class BallStateTracker:
             dt = max(0.001, current_time - self.last_update_time)
         self.last_update_time = current_time
 
-        # F: Constant Velocity 상태 전이 행렬
+        # F: 3D Constant Velocity 상태 전이 행렬
         F = np.eye(6, dtype=np.float32)
         F[0, 3] = dt
         F[1, 4] = dt
         F[2, 5] = dt
 
-        # H: Measurement Matrix (x, y, z 만 관측)
+        # H: Measurement Matrix (관측치는 x, y, z 좌표만 수신)
         H = np.zeros((3, 6), dtype=np.float32)
         H[0, 0] = 1.0
         H[1, 1] = 1.0
         H[2, 2] = 1.0
 
-        # 1. Predict (상태 예측)
+        # 1. Predict Step (상태 및 오차 공분산 예측)
         if self.state is None:
             if measurement is not None:
                 self.state = np.array([measurement[0], measurement[1], measurement[2], 0.0, 0.0, 0.0], dtype=np.float32)
@@ -54,12 +58,12 @@ class BallStateTracker:
         self.state = F @ self.state
         self.P = F @ self.P @ F.T + self.Q
 
-        # 2. Correct (관측치 업데이트)
+        # 2. Correct Step (관측치 보정)
         if measurement is not None:
             pred_pos = self.state[:3]
             dist = np.linalg.norm(measurement - pred_pos)
 
-            # 공 이동 감지 (1.2m 이내 유연한 추적)
+            # 공 유연 추적 (1.2m 이내 관측치 수용)
             if dist < 1.20:
                 y = measurement - (H @ self.state)
                 S = H @ self.P @ H.T + self.R
@@ -68,7 +72,7 @@ class BallStateTracker:
                 self.P = (np.eye(6) - K @ H) @ self.P
                 self.miss_count = 0
             else:
-                # 공이 사람이 손으로 옮겨져 1.2m 이상 크게 이동한 경우 2프레임 후 새 위치로 EKF 추적 리셋
+                # 공을 사람이 손으로 1.2m 이상 크게 치워 위치가 점프한 경우 2프레임 후 새 위치로 리셋
                 self.miss_count += 1
                 if self.miss_count >= 2:
                     self.state = np.array([measurement[0], measurement[1], measurement[2], 0.0, 0.0, 0.0], dtype=np.float32)
@@ -85,28 +89,25 @@ class BallStateTracker:
 
 class Go2LidarBallDetector:
     """
-    Go2 EDU 내장 3D LiDAR Point Cloud (utlidar_lidar) 데이터를 기반으로 
-    로봇 base 좌표계 기준 축구공(반지름 R=0.11m, 공식 5호 공)의 3차원 상대 위치 (x, y, z)를 추정하는 Perception 모듈.
-    
-    Unitree 공식 Go2 URDF radar_joint 기준 변환:
-      xyz = [0.28945, 0.0, -0.046825]
-      rpy = [0.0, 2.8782, 0.0]
+    Unitree Go2 내장 3D LiDAR (/utlidar/cloud) 전용 5호 축구공 3D 검출기.
+
+    공식 URDF pitch 회전(theta=2.8782 rad) 변환 적용:
+      R_LIDAR2BASE = [[-0.965512, 0, 0.260358], [0, 1, 0], [-0.260358, 0, -0.965512]]
+      T_LIDAR2BASE = [0.28945, 0.0, -0.046825]
     """
 
-    # Static transformation matrix (utlidar_lidar -> base)
-    THETA = 2.8782
     R_LIDAR2BASE = np.array([
-        [np.cos(THETA), 0.0, np.sin(THETA)],
-        [0.0,           1.0, 0.0],
-        [-np.sin(THETA), 0.0, np.cos(THETA)],
+        [-0.965512, 0.0, 0.260358],
+        [0.0, 1.0, 0.0],
+        [-0.260358, 0.0, -0.965512],
     ], dtype=np.float32)
     T_LIDAR2BASE = np.array([0.28945, 0.0, -0.046825], dtype=np.float32)
 
-    def __init__(self, ball_radius: float = 0.11, radius_tolerance: float = 0.025, history_size: int = 4):
+    def __init__(self, ball_radius: float = 0.11, radius_tolerance: float = 0.03, history_size: int = 4):
         self.ball_radius = ball_radius
         self.radius_tolerance = radius_tolerance
         self.history_size = history_size
-        self.pos_history = []  # 이동평균 및 노이즈 필터링용 버퍼
+        self.pos_history = []
 
     @classmethod
     def transform_utlidar_to_base(cls, points_lidar: np.ndarray) -> np.ndarray:
@@ -116,11 +117,16 @@ class Go2LidarBallDetector:
         return points_lidar @ cls.R_LIDAR2BASE.T + cls.T_LIDAR2BASE
 
     def filter_roi_base(self, points_base: np.ndarray) -> np.ndarray:
-        """base 좌표계 기준 전방 ROI 범위 필터링 (로봇 앞다리 x < 0.35m 제외)"""
+        """
+        base 좌표계 기준 전방 ROI 범위 필터링:
+        - x: 0.38m ~ 2.5m (로봇 앞다리 x < 0.38m 완벽 마스킹)
+        - y: -0.8m ~ 0.8m
+        - z: -0.38m ~ -0.10m (지면 바닥 -0.34m 부근의 5호 축구공 중심 z ≈ -0.23m 영역만 선택)
+        """
         mask = (
-            (points_base[:, 0] >= 0.35) & (points_base[:, 0] <= 2.5) &
+            (points_base[:, 0] >= 0.38) & (points_base[:, 0] <= 2.5) &
             (points_base[:, 1] >= -0.8) & (points_base[:, 1] <= 0.8) &
-            (points_base[:, 2] >= -0.42) & (points_base[:, 2] <= 0.10)
+            (points_base[:, 2] >= -0.38) & (points_base[:, 2] <= -0.10)
         )
         return points_base[mask]
 
@@ -132,25 +138,14 @@ class Go2LidarBallDetector:
         _, unique_indices = np.unique(voxel_coords, axis=0, return_index=True)
         return points[unique_indices]
 
-    def remove_ground_plane(self, points_base: np.ndarray, distance_threshold: float = 0.03) -> np.ndarray:
-        """
-        지면 z-Cutoff 절단: 로봇 발 바닥(z ≈ -0.34m) 지면 점군을 제거하고,
-        지면 위 축구공(중심 z ≈ -0.23m, 반지름 0.11m) 점군(z > -0.27m)을 100% 완벽히 보존.
-        """
-        if len(points_base) == 0:
-            return points_base
-
-        # z > -0.27m 이상의 지면 위 오브젝트 점군만 보존 (공의 아랫면이 지면 RANSAC에 먹혀 잘리는 현상 원천 차단)
-        non_ground = points_base[points_base[:, 2] > -0.27]
-        return non_ground
-
     def euclidean_clusters(
         self,
         points: np.ndarray,
-        tolerance: float = 0.05,
-        min_points: int = 5,
+        tolerance: float = 0.06,
+        min_points: int = 4,
         max_points: int = 400,
     ):
+        """유클리드 거리 기반 3D 점군 클러스터링"""
         if len(points) == 0:
             return []
 
@@ -180,65 +175,103 @@ class Go2LidarBallDetector:
 
         return clusters
 
-    def fit_sphere_numpy(self, points: np.ndarray):
+    def fit_sphere_ransac_and_least_squares(self, points: np.ndarray, iterations: int = 40):
         """
-        순수 NumPy 기반 3D 구체 최소제곱 피팅 (Algebraic 3D Least Squares Sphere Fit).
-        외부 pyransac3d 패키지 의존 없이 1ms 만에 3D 구체의 중심 (a,b,c) 및 반지름 R을 계산.
+        RANSAC + Least Squares 2단계 구체 피팅 (RANSAC Inlier filtering + Least Squares refinement):
+        1단계: RANSAC으로 구체 표면 인라이어 점군(inliers)을 추출하여 평면/장애물 점 제거.
+        2단계: 추출된 inliers 점들에 대해 정밀 최소제곱법(Least Squares)으로 중심 (a,b,c) 및 반지름 R 산출.
         """
-        if len(points) < 5:
+        if len(points) < 4:
             return None, 999.0, "too_few_points"
 
-        # Bounding box 사전 검증 (공 지름 ~0.22m 초과 시 사전 제외)
         bbox_min = np.min(points, axis=0)
         bbox_max = np.max(points, axis=0)
         bbox_dim = bbox_max - bbox_min
-        if np.any(bbox_dim > 0.40):
+        if np.any(bbox_dim > 0.38):
             return None, 999.0, f"bbox_too_large_{np.round(bbox_dim, 2)}"
 
-        try:
-            # A * x = B 형태의 선형 대수 수식 구성
-            # 2a*x + 2b*y + 2c*z + D = x^2 + y^2 + z^2
-            x = points[:, 0]
-            y = points[:, 1]
-            z = points[:, 2]
+        best_center = None
+        best_radius = None
+        best_inliers = []
+        best_inlier_count = 0
 
+        num_pts = len(points)
+        # 1. RANSAC 3D 구체 피팅
+        for _ in range(iterations):
+            sample_idx = np.random.choice(num_pts, 4, replace=False)
+            pts_sample = points[sample_idx]
+
+            x, y, z = pts_sample[:, 0], pts_sample[:, 1], pts_sample[:, 2]
             A = np.column_stack([2 * x, 2 * y, 2 * z, np.ones_like(x)])
             B = x**2 + y**2 + z**2
 
-            # 최소제곱 해 (a, b, c, D) 구하기
-            res, _, _, _ = np.linalg.lstsq(A, B, rcond=None)
-            a, b, c, D = res[0], res[1], res[2], res[3]
+            try:
+                res, _, _, _ = np.linalg.lstsq(A, B, rcond=None)
+                a, b, c, D = res[0], res[1], res[2], res[3]
+                r_sq = D + a**2 + b**2 + c**2
+                if r_sq <= 0:
+                    continue
+                r_cand = np.sqrt(r_sq)
+                if abs(r_cand - self.ball_radius) > 0.05:
+                    continue
 
-            radius_sq = D + a**2 + b**2 + c**2
-            if radius_sq <= 0:
-                return None, 999.0, "invalid_radius_sq"
+                center_cand = np.array([a, b, c], dtype=np.float32)
+                dists = np.linalg.norm(points - center_cand, axis=1)
+                inlier_mask = np.abs(dists - r_cand) <= 0.035
+                inlier_cnt = np.sum(inlier_mask)
 
-            radius = np.sqrt(radius_sq)
-            center = np.array([a, b, c], dtype=np.float32)
+                if inlier_cnt > best_inlier_count:
+                    best_inlier_count = inlier_cnt
+                    best_center = center_cand
+                    best_radius = r_cand
+                    best_inliers = points[inlier_mask]
+            except Exception:
+                continue
 
-            # 점들과 추정 구체 표면 간의 평균 잔차(Residual Error) 계산
-            dist_to_center = np.linalg.norm(points - center, axis=1)
-            residuals = np.abs(dist_to_center - radius)
-            mean_residual = np.mean(residuals)
+        if best_inlier_count < 4 or best_inliers is None or len(best_inliers) < 4:
+            return None, 999.0, "ransac_no_valid_sphere"
 
-            # 5호 축구공(R=0.11m, tolerance ±0.035m) 및 잔차 <= 0.04m 검증
+        # 2. Least Squares Refinement (inliers 점들 대상 정밀 재피팅)
+        try:
+            x_in = best_inliers[:, 0]
+            y_in = best_inliers[:, 1]
+            z_in = best_inliers[:, 2]
+
+            A_in = np.column_stack([2 * x_in, 2 * y_in, 2 * z_in, np.ones_like(x_in)])
+            B_in = x_in**2 + y_in**2 + z_in**2
+
+            res_in, _, _, _ = np.linalg.lstsq(A_in, B_in, rcond=None)
+            a_ref, b_ref, c_ref, D_ref = res_in[0], res_in[1], res_in[2], res_in[3]
+            r_sq_ref = D_ref + a_ref**2 + b_ref**2 + c_ref**2
+
+            if r_sq_ref <= 0:
+                final_center, final_radius = best_center, best_radius
+            else:
+                final_radius = np.sqrt(r_sq_ref)
+                final_center = np.array([a_ref, b_ref, c_ref], dtype=np.float32)
+
+            # 표면 평균 잔차 계산
+            dist_final = np.linalg.norm(best_inliers - final_center, axis=1)
+            mean_residual = np.mean(np.abs(dist_final - final_radius))
+
+            # 5호 축구공 검증 (반지름 0.11m ± 0.035m, 바닥 z 중심 -0.32m ~ -0.16m)
             valid = (
-                np.isfinite(center).all()
-                and np.isfinite(radius)
-                and abs(radius - self.ball_radius) <= self.radius_tolerance
-                and mean_residual <= 0.040
-                and 0.35 <= center[0] <= 2.5
-                and -0.8 <= center[1] <= 0.8
-                and -0.40 <= center[2] <= 0.10
+                np.isfinite(final_center).all()
+                and np.isfinite(final_radius)
+                and abs(final_radius - self.ball_radius) <= self.radius_tolerance
+                and mean_residual <= 0.030
+                and 0.38 <= final_center[0] <= 2.5
+                and -0.8 <= final_center[1] <= 0.8
+                and -0.32 <= final_center[2] <= -0.15
             )
 
             if valid:
-                return center, mean_residual, "ok"
+                return final_center, mean_residual, "ok"
             else:
-                reason = f"r={radius:.3f}(target=0.11), res={mean_residual:.3f}, center={np.round(center, 2)}"
+                reason = f"r={final_radius:.3f}(target=0.11), res={mean_residual:.3f}, z={final_center[2]:.2f}"
                 return None, mean_residual, reason
         except Exception as e:
-            return None, 999.0, f"fit_exception_{e}"
+            return None, 999.0, f"refinement_exception_{e}"
 
     def detect_ball_3d(self, raw_point_cloud: np.ndarray, is_base_frame: bool = False, debug: bool = False):
         if (
@@ -257,29 +290,24 @@ class Go2LidarBallDetector:
 
         # 2. base ROI 필터링
         roi_points = self.filter_roi_base(points_base)
-        if len(roi_points) < 5:
+        if len(roi_points) < 4:
             if debug:
-                print(f"[DEBUG] raw={len(raw_point_cloud)}, base_roi={len(roi_points)} (<5)")
+                print(f"[DEBUG] raw={len(raw_point_cloud)}, base_roi={len(roi_points)} (<4)")
             return None
 
         # 3. Voxel 다운샘플링 (속도 최적화)
         ds_points = self.voxel_downsample(roi_points, voxel_size=0.02)
-
-        # 4. 지면 제거
-        non_ground = self.remove_ground_plane(ds_points)
-        if len(non_ground) < 5:
-            if debug:
-                print(f"[DEBUG] roi={len(roi_points)}, non_ground={len(non_ground)} (<5)")
+        if len(ds_points) < 4:
             return None
 
-        # 5. 유클리드 클러스터링
-        clusters = self.euclidean_clusters(non_ground)
+        # 4. 유클리드 클러스터링
+        clusters = self.euclidean_clusters(ds_points)
         if debug:
-            print(f"[DEBUG] input={len(raw_point_cloud)}, base_roi={len(roi_points)}, non_ground={len(non_ground)}, clusters={len(clusters)}")
+            print(f"[DEBUG] input={len(raw_point_cloud)}, base_roi={len(roi_points)}, clusters={len(clusters)}")
 
         candidates = []
         for i, cluster in enumerate(clusters):
-            center, residual, reason = self.fit_sphere_numpy(cluster)
+            center, residual, reason = self.fit_sphere_ransac_and_least_squares(cluster)
             if debug:
                 cnt = len(cluster)
                 mean_pos = np.mean(cluster, axis=0)
@@ -290,7 +318,7 @@ class Go2LidarBallDetector:
         if not candidates:
             return None
 
-        # 구체 최소제곱 잔차 오차(residual)가 가장 적은(가장 완벽한 공 형상) 클러스터 1순위 채택
+        # 구체 잔차 오차(residual)가 가장 적은 (가장 완벽한 공 구체 형상) 클러스터 1순위 채택
         best_cand = min(candidates, key=lambda item: item[0])
         raw_center = best_cand[1]
 
@@ -310,12 +338,12 @@ class Go2LidarBallDetector:
 
 
 if __name__ == "__main__":
-    print("Testing Go2LidarBallDetector Module (utlidar_lidar -> base transform)...")
+    print("Testing Go2LidarBallDetector Module (RANSAC + Least Squares 2-Stage Sphere Fit)...")
     detector = Go2LidarBallDetector(ball_radius=0.11)
 
-    # base 기준 전방 0.5m, z=-0.23m 지점에 구형 5호 축구공 생성 (지면 바닥 위 5호 공 중심 높이)
-    theta = np.linspace(0, 2 * np.pi, 50)
-    phi = np.linspace(0, np.pi, 50)
+    # base 기준 전방 0.5m, z=-0.23m 지점에 구형 5호 축구공 생성
+    theta = np.linspace(0, 2 * np.pi, 20)
+    phi = np.linspace(0, np.pi, 20)
     r = 0.11
     x_base = 0.5 + r * np.outer(np.cos(theta), np.sin(phi)).flatten()
     y_base = 0.0 + r * np.outer(np.sin(theta), np.sin(phi)).flatten()
