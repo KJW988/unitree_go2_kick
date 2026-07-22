@@ -20,9 +20,11 @@ class Go2LidarBallDetector:
     ], dtype=np.float32)
     T_LIDAR2BASE = np.array([0.28945, 0.0, -0.046825], dtype=np.float32)
 
-    def __init__(self, ball_radius: float = 0.11, radius_tolerance: float = 0.025):
+    def __init__(self, ball_radius: float = 0.11, radius_tolerance: float = 0.025, history_size: int = 4):
         self.ball_radius = ball_radius
         self.radius_tolerance = radius_tolerance
+        self.history_size = history_size
+        self.pos_history = []  # 이동평균 및 노이즈 필터링용 버퍼
 
     @classmethod
     def transform_utlidar_to_base(cls, points_lidar: np.ndarray) -> np.ndarray:
@@ -197,7 +199,23 @@ class Go2LidarBallDetector:
         if not candidates:
             return None
 
-        return max(candidates, key=lambda item: item[0])[1]
+        raw_center = max(candidates, key=lambda item: item[0])[1]
+
+        # 이동평균(Moving Average) & Outlier Rejection 노이즈 필터링
+        if len(self.pos_history) > 0:
+            last_avg = np.mean(self.pos_history, axis=0)
+            # 직전 위치 대비 0.35m 이상 튀는 불연속 아웃라이어 감지 시 기각
+            if np.linalg.norm(raw_center - last_avg) > 0.35:
+                if debug:
+                    print(f"[FILTER] Outlier jump rejected: raw={raw_center}, last_avg={last_avg}")
+                return last_avg  # 직전 평균 위치로 보정
+
+        self.pos_history.append(raw_center)
+        if len(self.pos_history) > self.history_size:
+            self.pos_history.pop(0)
+
+        smooth_center = np.mean(self.pos_history, axis=0)
+        return smooth_center
 
 
 if __name__ == "__main__":
