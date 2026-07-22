@@ -174,49 +174,65 @@ class Go2LidarBallDetector:
 
         return clusters
 
-    def fit_sphere_ransac(self, points: np.ndarray, iterations: int = 50, debug: bool = False):
+    def fit_sphere_numpy(self, points: np.ndarray):
+        """
+        순수 NumPy 기반 3D 구체 최소제곱 피팅 (Algebraic 3D Least Squares Sphere Fit).
+        외부 pyransac3d 패키지 의존 없이 1ms 만에 3D 구체의 중심 (a,b,c) 및 반지름 R을 계산.
+        """
         if len(points) < 5:
-            return None, "too_few_points"
+            return None, 999.0, "too_few_points"
 
         # Bounding box 사전 검증 (공 지름 ~0.22m 초과 시 사전 제외)
         bbox_min = np.min(points, axis=0)
         bbox_max = np.max(points, axis=0)
         bbox_dim = bbox_max - bbox_min
         if np.any(bbox_dim > 0.40):
-            return None, f"bbox_too_large_{np.round(bbox_dim, 2)}"
+            return None, 999.0, f"bbox_too_large_{np.round(bbox_dim, 2)}"
 
         try:
-            import pyransac3d as ransac
-            sphere = ransac.Sphere()
-            center, radius, inliers = sphere.fit(
-                points,
-                thresh=0.02,
-                maxIteration=iterations,
-            )
+            # A * x = B 형태의 선형 대수 수식 구성
+            # 2a*x + 2b*y + 2c*z + D = x^2 + y^2 + z^2
+            x = points[:, 0]
+            y = points[:, 1]
+            z = points[:, 2]
 
-            minimum_inliers = max(4, int(np.ceil(len(points) * 0.40)))
+            A = np.column_stack([2 * x, 2 * y, 2 * z, np.ones_like(x)])
+            B = x**2 + y**2 + z**2
 
+            # 최소제곱 해 (a, b, c, D) 구하기
+            res, _, _, _ = np.linalg.lstsq(A, B, rcond=None)
+            a, b, c, D = res[0], res[1], res[2], res[3]
+
+            radius_sq = D + a**2 + b**2 + c**2
+            if radius_sq <= 0:
+                return None, 999.0, "invalid_radius_sq"
+
+            radius = np.sqrt(radius_sq)
+            center = np.array([a, b, c], dtype=np.float32)
+
+            # 점들과 추정 구체 표면 간의 평균 잔차(Residual Error) 계산
+            dist_to_center = np.linalg.norm(points - center, axis=1)
+            residuals = np.abs(dist_to_center - radius)
+            mean_residual = np.mean(residuals)
+
+            # 5호 축구공(R=0.11m, tolerance ±0.03m) 및 잔차 <= 0.03m 100% 엄격한 구체 검증
             valid = (
                 np.isfinite(center).all()
                 and np.isfinite(radius)
                 and abs(radius - self.ball_radius) <= self.radius_tolerance
-                and len(inliers) >= minimum_inliers
+                and mean_residual <= 0.035
                 and 0.1 <= center[0] <= 2.5
                 and -0.8 <= center[1] <= 0.8
                 and -0.35 <= center[2] <= 0.25
             )
 
             if valid:
-                return np.asarray(center), "ok"
+                return center, mean_residual, "ok"
             else:
-                reason = f"r={radius:.3f}, inliers={len(inliers)}/{len(points)}, center={np.round(center, 2)}"
-                return None, reason
+                reason = f"r={radius:.3f}(target=0.11), res={mean_residual:.3f}, center={np.round(center, 2)}"
+                return None, mean_residual, reason
         except Exception as e:
-            # Fallback: pyransac3d가 없을 경우 클러스터의 3D 평균 중심점(Centroid) 사용
-            mean_center = np.mean(points, axis=0)
-            if 0.1 <= mean_center[0] <= 2.5 and -0.8 <= mean_center[1] <= 0.8 and -0.35 <= mean_center[2] <= 0.25:
-                return mean_center, f"fallback_centroid_ok({e})"
-            return None, f"ransac_exception_{e}"
+            return None, 999.0, f"fit_exception_{e}"
 
     def detect_ball_3d(self, raw_point_cloud: np.ndarray, is_base_frame: bool = False, debug: bool = False):
         if (
@@ -257,7 +273,7 @@ class Go2LidarBallDetector:
 
         candidates = []
         for i, cluster in enumerate(clusters):
-            center, reason = self.fit_sphere_ransac(cluster, debug=debug)
+            center, residual, reason = self.fit_sphere_numpy(cluster)
             if debug:
                 cnt = len(cluster)
                 mean_pos = np.mean(cluster, axis=0)

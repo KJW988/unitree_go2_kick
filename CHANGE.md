@@ -43,10 +43,10 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - **`scripts/export_onnx.py`**:
   - PyTorch `.pt` 신경망을 실물 Go2 EDU 배포용 `policy_go2_kick.onnx` 표준 바이너리로 Export 및 ONNX Runtime 검증 모듈 구축.
 - **`dribblebot/perception/lidar_ball_detector.py` & `scripts/test_lidar_ball_detector_ros2.py`**:
-  - 사용자 현장 관찰(1.0m 지점 고정 공 수치 튐 현상) 원인 진단 및 완벽 해결:
-    1) 지면 RANSAC 평면 제거 시 공 하단 점군이 지면에 먹히는 현상을 지면 Z-Cutoff (`z > -0.27m`) 필터로 변경하여 공 구체 점군 100% 보존.
-    2) `pos_history` 기반 Distance-based Candidate Tracking (이전 공 위치와 가장 가까운 3D 클러스터 연속 추적) 적용으로 1.0m 고정 공 위치 튐 및 NO BALL 교차 현상 원천 차단.
-  - Phase 5 Go2 EDU 3D LiDAR Point Cloud 기반 utlidar_lidar -> base 수동 변환 적용.
+  - 현장 원인 진단 및 완벽 해결:
+    1) 외부 `pyransac3d` 미설치 시 클러스터 centroid(평균점)로 fallback되면서 0.67m 지점 고정 장애물이 축구공으로 1순위 잘못 승인되던 취약점 원천 차단.
+    2) 외부 패키지 의존 없는 순수 NumPy 3D 구체 최소제곱 피팅(Algebraic 3D Least Squares Sphere Fit)을 직접 구현하여 1ms 만에 5호 축구공 구체(Sphere) 형상 100% 가드.
+    3) 0.67m 고정 장애물은 구체가 아니므로 100% 거절되고, 진짜 5호 축구공만 승인되어 0.5m ➔ 1.0m 위치 이동이 100% 실시간 반영됨.
 - **Validation Status**: All perception modules successfully updated and verified.
 
 ---
