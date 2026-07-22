@@ -40,14 +40,10 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 ### 5. 선제 구축 파이프라인 모듈 (v1 ~ 실기 배포용)
 - **`scripts/play_kick.py`**:
   - Headless 서버 환경 지원 오프라인 비디오 렌더링 (`kick_demo.mp4`) 및 CLI 커맨드 주입 평가 스크립트 구축.
-- **`dribblebot/perception/lidar_ball_detector.py` & `scripts/test_lidar_ball_detector_ros2.py`**:
-  - 세계 표준 사족보행 로봇 축구 (MIT DribbleBot / RoboNaldo 2026 / ANYmal Soccer) 모범 사례 종합 반영:
-    1) **RANSAC + Least Squares 2-Stage Sphere Fitting**: 1단계 RANSAC으로 pure inliers를 필터링 후 2단계 최소제곱법으로 정밀 구체 중심/반지름 재산출. 0.65m 비구체 허공 장애물 100% 거절.
-    2) **Grounded Ball Elevation Gate (`-0.32m <= z_center <= -0.15m`)**: 지면 바닥(z ≈ -0.34m) 위에 놓인 5호 축구공의 물리적 Z중심 영역만 100% 검증 승인.
-    3) **Self-Robot Leg Masking (`x >= 0.38m`)**: 로봇 무릎/앞발끝 점군을 ROI 단계에서 완전 차단.
-    4) **RoboNaldo 3D EKF Constant Velocity Tracker (`BallStateTracker`)**: 15.4Hz 센서 결측 시 50Hz 제어용 보간 및 1.2m 유연 이동 추적 적용.
-  - **`scripts/debug_lidar_raw.py`**: 로봇 실물 LiDAR 원시 Z-높이 및 변환 점군 1초 실측 디버깅 모듈 신규 구축.
-- **Validation Status**: Pure math unit test passed with [0.500m, 0.000m, -0.230m] 0.000m error precision.
+- **`dribblebot/envs/go2/go2_kick_config.py`**:
+  - 사용자 통찰 반영: 공 스폰 위치를 `x in [0.4m, 1.2m], y in [-0.3m, 0.3m]`로 무작위 확장.
+  - 로봇이 먼 거리 공을 향해 보행 접근(Approach Locomotion) 후 3지점 지지축 정렬 및 슈팅 킥을 연결하는 풀 시퀀스(Full Approach-and-Kick Policy) RL 커리큘럼 구축.
+- **Validation Status**: Config compiled cleanly and pushed to GitHub main branch.
 
 ---
 

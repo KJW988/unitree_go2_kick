@@ -49,10 +49,10 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.fix_base_link = False
 
     _ = Cnfg.ball
-    _.ball_init_pos = [0.5, 0.0, 0.11]   # 로봇 정면 0.5m, 공식 5호 축구공 반지름(0.11m) 지면 위
+    _.ball_init_pos = [0.8, 0.0, 0.11]   # 로봇 정면 0.8m (5호 축구공 반지름 0.11m)
     _.mass = 0.43                        # 공식 5호 축구공 질량 (430g)
     _.radius = 0.11                      # 공식 5호 축구공 반지름 (11cm, 지름 22cm)
-    _.init_pos_range = [0.10, 0.10, 0.0]   # 로봇 정면 x in [0.4m, 0.6m] 전방 안전지대
+    _.init_pos_range = [0.40, 0.30, 0.0]   # 전방 x in [0.4m, 1.2m], y in [-0.3m, 0.3m] 범위 무작위 스폰 (접근 보행 + 킥 풀 시퀀스 학습 지원)
     _.init_vel_range = [0.0, 0.0, 0.0]
     _.pos_reset_prob = 0.0
     _.vel_reset_prob = 0.0
