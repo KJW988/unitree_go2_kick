@@ -13,11 +13,7 @@ class Go2LidarBallDetector:
     4. Sphere RANSAC Fitting (반지름 R=0.11m 구체 피팅)
     """
 
-<<<<<<< HEAD
-    def __init__(self, ball_radius: float = 0.11, radius_tolerance: float = 0.02):
-=======
     def __init__(self, ball_radius: float = 0.11, radius_tolerance: float = 0.025):
->>>>>>> d527aab (Add Go2 LiDAR ball detection)
         self.ball_radius = ball_radius
         self.radius_tolerance = radius_tolerance
 

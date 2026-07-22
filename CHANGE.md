@@ -15,7 +15,6 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
   - 양 앞다리가 공중에서 동시에 허우적거리는 현상 해결을 위해 3-leg stance support 및 single front-leg kick contact 메커니즘 구축.
 - **Validation Status**: Verified logic and math safe implementation.
 
-<<<<<<< HEAD
 ### 2. `dribblebot/envs/go2/go2_kick_config.py` & `kick_rewards.py`
 - **Changed Section**: `config_go2_kick()` 및 `_reward_kick_contact()`
 - **Change Description**:
@@ -23,16 +22,6 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
   - 사용자 현장 관찰(4다리로 허우적대며 공에 다가가는 Local Minima 현상)을 바탕으로 정밀 튜닝: `_reward_kick_contact`에 `support_gate`(공 임팩트 시 3개 지지다리 중 최소 2개 이상 지면 받침 필수 조건) 결합.
   - `reward_scales.stance_legs_support = 3.0` 상향, `action_rate = -0.05`, `dof_acc = -5.0e-7` 감점 상향으로 걸어가며 다리를 허우적거리는 편법 동작 물리적 차단 및 단독 앞다리 킥 동작 정교화.
 - **Validation Status**: Config updated and validated.
-=======
-### 2. `dribblebot/envs/go2/go2_kick_config.py`
-- **Changed Section**: `config_go2_kick()` (Line 41 - 180)
-- **Change Description**:
-  - `sim.physx.max_gpu_contact_pairs = 2 ** 25` (33,554,432) 및 `default_buffer_size_multiplier = 32` 세팅: 4096개 환경에서의 경고 없는 쾌적하고 안정적인 PhysX 메모리 세팅.
-  - `reward_scales.stance_legs_support = 1.0` 및 `dof_acc = -2.5e-7` 반영.
-  - `ball.ball_init_pos = [0.5, 0.0, 0.09]`, `init_pos_range = [0.10, 0.10, 0.0]` 으로 위치 조정.
-  - `terrain.x_init_range = 0.0`, `y_init_range = 0.0`, `yaw_init_range = 0.0` 설정으로 로봇 원점 고정 스폰.
-- **Validation Status**: Config updated and validated for 4096 envs.
->>>>>>> 0d0d8a3 (feat: Initial commit-kick RL learning)
 
 ### 3. `MASTER_PLAN.md`
 - **Changed Section**: Overall Master Plan (v0 Milestone & Core Dynamics Innovations)

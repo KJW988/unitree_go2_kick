@@ -13,11 +13,7 @@ def test_real_go2_lidar():
     print(" 🚀 Go2 EDU 3D LiDAR Ball Perception Standalone Test ")
     print("=" * 65)
 
-<<<<<<< HEAD
     detector = Go2LidarBallDetector(ball_radius=0.11)
-=======
-    detector = Go2LidarBallDetector(ball_radius=0.0889)
->>>>>>> 0d0d8a3 (feat: Initial commit-kick RL learning)
 
     # unitree_sdk2 / unilidar_sdk 연동 시도
     using_real_lidar = False
