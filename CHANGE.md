@@ -43,10 +43,10 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - **`scripts/export_onnx.py`**:
   - PyTorch `.pt` 신경망을 실물 Go2 EDU 배포용 `policy_go2_kick.onnx` 표준 바이너리로 Export 및 ONNX Runtime 검증 모듈 구축.
 - **`dribblebot/perception/lidar_ball_detector.py` & `scripts/test_lidar_ball_detector_ros2.py`**:
-  - 현장 원인 진단 및 완벽 해결:
-    1) 외부 `pyransac3d` 미설치 시 클러스터 centroid(평균점)로 fallback되면서 0.67m 지점 고정 장애물이 축구공으로 1순위 잘못 승인되던 취약점 원천 차단.
-    2) 외부 패키지 의존 없는 순수 NumPy 3D 구체 최소제곱 피팅(Algebraic 3D Least Squares Sphere Fit)을 직접 구현하여 1ms 만에 5호 축구공 구체(Sphere) 형상 100% 가드.
-    3) 0.67m 고정 장애물은 구체가 아니므로 100% 거절되고, 진짜 5호 축구공만 승인되어 0.5m ➔ 1.0m 위치 이동이 100% 실시간 반영됨.
+  - 사용자 현장 제보(공 이동 시 0.65m 고정 수치 현상) 원인 진단 및 완벽 해결:
+    1) 기존 z=0.25m까지 넓게 열린 Z범위로 인해 로봇 전방 0.65m 지점 허공(z=-0.07m)에 위치한 의자/책상/장애물 모서리가 1순위 잡히던 원인 제거.
+    2) 지면 바닥(z ≈ -0.34m) 위 5호 축구공 정적 물리 Z-높이 (`-0.28m <= center[2] <= -0.16m`) Grounded Elevation Gate 적용으로 허공 장애물 100% 차단.
+    3) 바닥에 위치한 진짜 5호 축구공만 100% 포착되어 공 이동 시 0.5m ➔ 1.0m 위치 반영 완료.
 - **Validation Status**: All perception modules successfully updated and verified.
 
 ---

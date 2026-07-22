@@ -116,11 +116,11 @@ class Go2LidarBallDetector:
         return points_lidar @ cls.R_LIDAR2BASE.T + cls.T_LIDAR2BASE
 
     def filter_roi_base(self, points_base: np.ndarray) -> np.ndarray:
-        """base 좌표계 기준 전방 ROI 범위 필터링 (로봇 앞다리 영역 x < 0.35m 제외)"""
+        """base 좌표계 기준 전방 ROI 범위 필터링 (로봇 앞다리 x < 0.35m 및 허공 z > -0.10m 제외)"""
         mask = (
             (points_base[:, 0] >= 0.35) & (points_base[:, 0] <= 2.5) &
             (points_base[:, 1] >= -0.8) & (points_base[:, 1] <= 0.8) &
-            (points_base[:, 2] >= -0.32) & (points_base[:, 2] <= 0.10)
+            (points_base[:, 2] >= -0.34) & (points_base[:, 2] <= -0.10)
         )
         return points_base[mask]
 
@@ -221,15 +221,15 @@ class Go2LidarBallDetector:
             residuals = np.abs(dist_to_center - radius)
             mean_residual = np.mean(residuals)
 
-            # 5호 축구공(R=0.11m, tolerance ±0.03m) 및 잔차 <= 0.03m 100% 엄격한 구체 검증
+            # 5호 축구공(R=0.11m, tolerance ±0.03m) 및 지면 바닥(z ≈ -0.34m) 위 축구공 Z중심 (-0.28m ~ -0.16m) 100% 엄격 검증
             valid = (
                 np.isfinite(center).all()
                 and np.isfinite(radius)
                 and abs(radius - self.ball_radius) <= self.radius_tolerance
                 and mean_residual <= 0.035
-                and 0.1 <= center[0] <= 2.5
+                and 0.35 <= center[0] <= 2.5
                 and -0.8 <= center[1] <= 0.8
-                and -0.35 <= center[2] <= 0.25
+                and -0.28 <= center[2] <= -0.16
             )
 
             if valid:
@@ -319,13 +319,13 @@ if __name__ == "__main__":
     print("Testing Go2LidarBallDetector Module (utlidar_lidar -> base transform)...")
     detector = Go2LidarBallDetector(ball_radius=0.11)
 
-    # base 기준 전방 0.5m, z=0.11m 지점에 구형 5호 축구공 생성 (지면 위 중심 높이 0.11m)
+    # base 기준 전방 0.5m, z=-0.23m 지점에 구형 5호 축구공 생성 (지면 바닥 위 5호 공 중심 높이)
     theta = np.linspace(0, 2 * np.pi, 50)
     phi = np.linspace(0, np.pi, 50)
     r = 0.11
     x_base = 0.5 + r * np.outer(np.cos(theta), np.sin(phi)).flatten()
     y_base = 0.0 + r * np.outer(np.sin(theta), np.sin(phi)).flatten()
-    z_base = 0.11 + r * np.outer(np.ones_like(theta), np.cos(phi)).flatten()
+    z_base = -0.23 + r * np.outer(np.ones_like(theta), np.cos(phi)).flatten()
     pc_base = np.vstack((x_base, y_base, z_base)).T
 
     # 역변환으로 utlidar_lidar 원시 좌표 생성
