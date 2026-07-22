@@ -7,7 +7,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
 
-from dribblebot.perception.lidar_ball_detector import Go2LidarBallDetector
+from dribblebot.perception.lidar_ball_detector import Go2LidarBallDetector, BallStateTracker
 
 
 def pointcloud2_to_xyz(msg):
@@ -50,6 +50,7 @@ class BallDetectorNode(Node):
     def __init__(self, debug=False):
         super().__init__("go2_lidar_ball_detector")
         self.detector = Go2LidarBallDetector(ball_radius=0.11)
+        self.tracker = BallStateTracker()  # RoboNaldo 3D EKF State Tracker
         self.debug = debug
         self.last_ball_print = 0.0
         self.last_no_ball_print = 0.0
@@ -61,15 +62,17 @@ class BallDetectorNode(Node):
             qos_profile_sensor_data,
         )
 
-        print("Listening on /utlidar/cloud (Applying utlidar_lidar -> base transform)...", flush=True)
+        print("Listening on /utlidar/cloud (Applying utlidar_lidar -> base transform & 3D EKF Tracker)...", flush=True)
 
     def callback(self, msg):
         started = time.perf_counter()
 
         try:
             points_lidar = pointcloud2_to_xyz(msg)
-            # detect_ball_3d 내에서 utlidar_lidar -> base 변환 자동 수행
-            center = self.detector.detect_ball_3d(points_lidar, is_base_frame=False, debug=self.debug)
+            # 1. LiDAR RANSAC 3D 단원 관측치
+            measurement = self.detector.detect_ball_3d(points_lidar, is_base_frame=False, debug=self.debug)
+            # 2. RoboNaldo 방식 3D EKF State Tracker로 결측 보간 및 추적
+            center, vel = self.tracker.update(measurement=measurement)
         except Exception as error:
             self.get_logger().error(str(error))
             return

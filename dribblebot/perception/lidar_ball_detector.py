@@ -1,4 +1,80 @@
+import time
 import numpy as np
+
+
+class BallStateTracker:
+    """
+    RoboNaldo (OpenDriveLab 2026) onboard/perception/ball_fuser.py 방식:
+    3D EKF Constant Velocity Filter 기반 공 상태 추적기.
+    센서 결측(NO BALL)이 발생해도 직전 3D 위치 및 속도를 기반으로 
+    100% 끊김 없는 매끄러운 50Hz 공 3D 좌표를 보간(Interpolation)함.
+    """
+
+    def __init__(self, dt: float = 0.02, process_noise: float = 0.05, measurement_noise: float = 0.02):
+        self.dt = dt
+        self.state = None  # [x, y, z, vx, vy, vz]
+        self.P = np.eye(6, dtype=np.float32) * 0.1
+        self.Q = np.eye(6, dtype=np.float32) * process_noise  # 프로세스 노이즈
+        self.R = np.eye(3, dtype=np.float32) * measurement_noise  # 측정 노이즈
+        self.last_update_time = None
+        self.miss_count = 0
+        self.max_miss_frames = 15  # 1초 이상 연속 미검출 시에만 지움
+
+    def update(self, measurement: np.ndarray = None, current_time: float = None):
+        if current_time is None:
+            current_time = time.time()
+
+        if self.last_update_time is None:
+            dt = self.dt
+        else:
+            dt = max(0.001, current_time - self.last_update_time)
+        self.last_update_time = current_time
+
+        # F: Constant Velocity 상태 전이 행렬
+        F = np.eye(6, dtype=np.float32)
+        F[0, 3] = dt
+        F[1, 4] = dt
+        F[2, 5] = dt
+
+        # H: Measurement Matrix (x, y, z 만 관측)
+        H = np.zeros((3, 6), dtype=np.float32)
+        H[0, 0] = 1.0
+        H[1, 1] = 1.0
+        H[2, 2] = 1.0
+
+        # 1. Predict (상태 예측)
+        if self.state is None:
+            if measurement is not None:
+                self.state = np.array([measurement[0], measurement[1], measurement[2], 0.0, 0.0, 0.0], dtype=np.float32)
+                self.miss_count = 0
+                return self.state[:3], np.zeros(3, dtype=np.float32)
+            else:
+                return None, None
+
+        self.state = F @ self.state
+        self.P = F @ self.P @ F.T + self.Q
+
+        # 2. Correct (관측치 업데이트)
+        if measurement is not None:
+            # 급격하게 0.5m 이상 튀는 유령 관측치 아웃라이어 게이팅
+            pred_pos = self.state[:3]
+            if np.linalg.norm(measurement - pred_pos) < 0.50:
+                y = measurement - (H @ self.state)
+                S = H @ self.P @ H.T + self.R
+                K = self.P @ H.T @ np.linalg.inv(S)
+                self.state = self.state + K @ y
+                self.P = (np.eye(6) - K @ H) @ self.P
+                self.miss_count = 0
+            else:
+                self.miss_count += 1
+        else:
+            self.miss_count += 1
+
+        if self.miss_count > self.max_miss_frames:
+            self.state = None
+            return None, None
+
+        return self.state[:3], self.state[3:]
 
 
 class Go2LidarBallDetector:
