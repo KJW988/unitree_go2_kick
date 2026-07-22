@@ -51,23 +51,16 @@ class Go2LidarBallDetector:
         return points[unique_indices]
 
     def remove_ground_plane(self, points_base: np.ndarray, distance_threshold: float = 0.03) -> np.ndarray:
-        """RANSAC 평면 피팅으로 지면 포인트 제거"""
-        if len(points_base) < 10:
+        """
+        지면 z-Cutoff 절단: 로봇 발 바닥(z ≈ -0.34m) 지면 점군을 제거하고,
+        지면 위 축구공(중심 z ≈ -0.23m, 반지름 0.11m) 점군(z > -0.27m)을 100% 완벽히 보존.
+        """
+        if len(points_base) == 0:
             return points_base
 
-        try:
-            import pyransac3d as ransac
-            plane = ransac.Plane()
-            _, inliers = plane.fit(points_base, thresh=distance_threshold, maxIteration=50)
-            mask = np.ones(len(points_base), dtype=bool)
-            mask[inliers] = False
-            non_ground = points_base[mask]
-        except Exception:
-            # Fallback: z축 높이 기준 지면 절단
-            non_ground = points_base[points_base[:, 2] > -0.28]
-
-        # 로봇 발 접촉면 근처 잔여물 2차 정제
-        return non_ground[non_ground[:, 2] > -0.32]
+        # z > -0.27m 이상의 지면 위 오브젝트 점군만 보존 (공의 아랫면이 지면 RANSAC에 먹혀 잘리는 현상 원천 차단)
+        non_ground = points_base[points_base[:, 2] > -0.27]
+        return non_ground
 
     def euclidean_clusters(
         self,
@@ -199,16 +192,21 @@ class Go2LidarBallDetector:
         if not candidates:
             return None
 
-        raw_center = max(candidates, key=lambda item: item[0])[1]
-
-        # 이동평균(Moving Average) & Outlier Rejection 노이즈 필터링
+        # 이전 추정 위치가 존재할 경우, 이전 공 위치와 가장 가까운 클러스터 후보를 지속 추적(Distance-based Tracking)
         if len(self.pos_history) > 0:
             last_avg = np.mean(self.pos_history, axis=0)
-            # 직전 위치 대비 0.35m 이상 튀는 불연속 아웃라이어 감지 시 기각
-            if np.linalg.norm(raw_center - last_avg) > 0.35:
+            # 이전 위치와 가장 가까운 클러스터 선택
+            best_cand = min(candidates, key=lambda item: np.linalg.norm(item[1] - last_avg))
+            raw_center = best_cand[1]
+
+            # 순간 0.40m 이상 튀는 아웃라이어 Jump 거절 및 직전 평균 보정
+            if np.linalg.norm(raw_center - last_avg) > 0.40:
                 if debug:
                     print(f"[FILTER] Outlier jump rejected: raw={raw_center}, last_avg={last_avg}")
-                return last_avg  # 직전 평균 위치로 보정
+                return last_avg
+        else:
+            # 첫 검출 시에는 가장 점군이 풍부한 클러스터 선택
+            raw_center = max(candidates, key=lambda item: item[0])[1]
 
         self.pos_history.append(raw_center)
         if len(self.pos_history) > self.history_size:

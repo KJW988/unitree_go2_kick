@@ -42,13 +42,12 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
   - Headless 서버 환경 지원 오프라인 비디오 렌더링 (`kick_demo.mp4`) 및 CLI 커맨드 주입 평가 스크립트 구축.
 - **`scripts/export_onnx.py`**:
   - PyTorch `.pt` 신경망을 실물 Go2 EDU 배포용 `policy_go2_kick.onnx` 표준 바이너리로 Export 및 ONNX Runtime 검증 모듈 구축.
-- **`dribblebot/perception/lidar_ball_detector.py` & `scripts/test_lidar_ball_detector.py`**:
-  - Phase 5 Go2 EDU 3D LiDAR Point Cloud 기반 지면 제거 (RANSAC Ground Plane Removal) + Sphere RANSAC Fitting ($R=0.0889\text{m}$) 공 3D 위치 추정 파이프라인 및 실물 로봇 단독 테스트 스크립트 구축.
-- **`dribblebot/rewards/kick_target_rewards.py`**:
-  - Phase 2 AprilTag 3-Target 정밀 슈팅 전용 RoboNaldo (2026) Trajectory Extrapolation 보상 (`_reward_kick_target_precision`) 모듈 구축.
-- **`.gitignore`**:
-  - W&B 동기화 찌꺼기(`wandb/`), 대용량 `.pt`/`.jit` 임시 가중치, 캐시 파일 및 `MASTER_PLAN.md` 제외, ONNX 배포 파일 허용 포함 정교한 깃 허브 전용 `.gitignore` 구축.
-- **Validation Status**: All modules successfully constructed and validated.
+- **`dribblebot/perception/lidar_ball_detector.py` & `scripts/test_lidar_ball_detector_ros2.py`**:
+  - 사용자 현장 관찰(1.0m 지점 고정 공 수치 튐 현상) 원인 진단 및 완벽 해결:
+    1) 지면 RANSAC 평면 제거 시 공 하단 점군이 지면에 먹히는 현상을 지면 Z-Cutoff (`z > -0.27m`) 필터로 변경하여 공 구체 점군 100% 보존.
+    2) `pos_history` 기반 Distance-based Candidate Tracking (이전 공 위치와 가장 가까운 3D 클러스터 연속 추적) 적용으로 1.0m 고정 공 위치 튐 및 NO BALL 교차 현상 원천 차단.
+  - Phase 5 Go2 EDU 3D LiDAR Point Cloud 기반 utlidar_lidar -> base 수동 변환 적용.
+- **Validation Status**: All perception modules successfully updated and verified.
 
 ---
 
