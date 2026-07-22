@@ -56,9 +56,11 @@ class BallStateTracker:
 
         # 2. Correct (관측치 업데이트)
         if measurement is not None:
-            # 급격하게 0.5m 이상 튀는 유령 관측치 아웃라이어 게이팅
             pred_pos = self.state[:3]
-            if np.linalg.norm(measurement - pred_pos) < 0.50:
+            dist = np.linalg.norm(measurement - pred_pos)
+
+            # 공 이동 감지 (1.2m 이내 유연한 추적)
+            if dist < 1.20:
                 y = measurement - (H @ self.state)
                 S = H @ self.P @ H.T + self.R
                 K = self.P @ H.T @ np.linalg.inv(S)
@@ -66,7 +68,11 @@ class BallStateTracker:
                 self.P = (np.eye(6) - K @ H) @ self.P
                 self.miss_count = 0
             else:
+                # 공이 사람이 손으로 옮겨져 1.2m 이상 크게 이동한 경우 2프레임 후 새 위치로 EKF 추적 리셋
                 self.miss_count += 1
+                if self.miss_count >= 2:
+                    self.state = np.array([measurement[0], measurement[1], measurement[2], 0.0, 0.0, 0.0], dtype=np.float32)
+                    self.miss_count = 0
         else:
             self.miss_count += 1
 
@@ -291,11 +297,12 @@ class Go2LidarBallDetector:
             best_cand = min(candidates, key=lambda item: np.linalg.norm(item[1] - last_avg))
             raw_center = best_cand[1]
 
-            # 순간 0.40m 이상 튀는 아웃라이어 Jump 거절 및 직전 평균 보정
-            if np.linalg.norm(raw_center - last_avg) > 0.40:
+            # 순간 1.20m 이상 튀는 불연속 아웃라이어 거절 및 직전 평균 보정 (공 이동 시 1.2m 범위 반영)
+            if np.linalg.norm(raw_center - last_avg) > 1.20:
                 if debug:
                     print(f"[FILTER] Outlier jump rejected: raw={raw_center}, last_avg={last_avg}")
-                return last_avg
+                self.pos_history.clear()  # 새 위치로 명확히 이동한 경우 버퍼 리셋
+                raw_center = raw_center
         else:
             # 첫 검출 시에는 가장 점군이 풍부한 클러스터 선택
             raw_center = max(candidates, key=lambda item: item[0])[1]
