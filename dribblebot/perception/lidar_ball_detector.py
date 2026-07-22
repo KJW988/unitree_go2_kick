@@ -116,11 +116,11 @@ class Go2LidarBallDetector:
         return points_lidar @ cls.R_LIDAR2BASE.T + cls.T_LIDAR2BASE
 
     def filter_roi_base(self, points_base: np.ndarray) -> np.ndarray:
-        """base 좌표계 기준 전방 ROI 범위 필터링 (로봇 앞다리 x < 0.35m 및 허공 z > -0.10m 제외)"""
+        """base 좌표계 기준 전방 ROI 범위 필터링 (로봇 앞다리 x < 0.35m 제외)"""
         mask = (
             (points_base[:, 0] >= 0.35) & (points_base[:, 0] <= 2.5) &
             (points_base[:, 1] >= -0.8) & (points_base[:, 1] <= 0.8) &
-            (points_base[:, 2] >= -0.34) & (points_base[:, 2] <= -0.10)
+            (points_base[:, 2] >= -0.42) & (points_base[:, 2] <= 0.10)
         )
         return points_base[mask]
 
@@ -221,15 +221,15 @@ class Go2LidarBallDetector:
             residuals = np.abs(dist_to_center - radius)
             mean_residual = np.mean(residuals)
 
-            # 5호 축구공(R=0.11m, tolerance ±0.03m) 및 지면 바닥(z ≈ -0.34m) 위 축구공 Z중심 (-0.28m ~ -0.16m) 100% 엄격 검증
+            # 5호 축구공(R=0.11m, tolerance ±0.035m) 및 잔차 <= 0.04m 검증
             valid = (
                 np.isfinite(center).all()
                 and np.isfinite(radius)
                 and abs(radius - self.ball_radius) <= self.radius_tolerance
-                and mean_residual <= 0.035
+                and mean_residual <= 0.040
                 and 0.35 <= center[0] <= 2.5
                 and -0.8 <= center[1] <= 0.8
-                and -0.28 <= center[2] <= -0.16
+                and -0.40 <= center[2] <= 0.10
             )
 
             if valid:
@@ -285,27 +285,21 @@ class Go2LidarBallDetector:
                 mean_pos = np.mean(cluster, axis=0)
                 print(f"  Cluster {i}: pts={cnt}, mean=({mean_pos[0]:.2f}, {mean_pos[1]:.2f}, {mean_pos[2]:.2f}), fit={reason}")
             if center is not None:
-                candidates.append((len(cluster), center))
+                candidates.append((residual, center))
 
         if not candidates:
             return None
 
-        # 이전 추정 위치가 존재할 경우, 이전 공 위치와 가장 가까운 클러스터 후보를 지속 추적(Distance-based Tracking)
+        # 구체 최소제곱 잔차 오차(residual)가 가장 적은(가장 완벽한 공 형상) 클러스터 1순위 채택
+        best_cand = min(candidates, key=lambda item: item[0])
+        raw_center = best_cand[1]
+
         if len(self.pos_history) > 0:
             last_avg = np.mean(self.pos_history, axis=0)
-            # 이전 위치와 가장 가까운 클러스터 선택
-            best_cand = min(candidates, key=lambda item: np.linalg.norm(item[1] - last_avg))
-            raw_center = best_cand[1]
-
-            # 순간 1.20m 이상 튀는 불연속 아웃라이어 거절 및 직전 평균 보정 (공 이동 시 1.2m 범위 반영)
             if np.linalg.norm(raw_center - last_avg) > 1.20:
                 if debug:
-                    print(f"[FILTER] Outlier jump rejected: raw={raw_center}, last_avg={last_avg}")
-                self.pos_history.clear()  # 새 위치로 명확히 이동한 경우 버퍼 리셋
-                raw_center = raw_center
-        else:
-            # 첫 검출 시에는 가장 점군이 풍부한 클러스터 선택
-            raw_center = max(candidates, key=lambda item: item[0])[1]
+                    print(f"[FILTER] Relocation detected: reset tracking buffer to raw={raw_center}")
+                self.pos_history.clear()
 
         self.pos_history.append(raw_center)
         if len(self.pos_history) > self.history_size:
