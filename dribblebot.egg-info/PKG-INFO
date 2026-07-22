@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: dribblebot
+Version: 1.0.0
+Summary: Toolkit for deployment of soccer dribbling on the Unitree Go1.
+Author: Yandong Ji
+Author-email: ydji1024@gmail.com
+License: BSD-3-Clause
+License-File: LICENSE

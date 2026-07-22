@@ -1,0 +1,8 @@
+params-proto==2.10.9
+gym==0.18.0
+tqdm
+matplotlib
+numpy==1.23.5
+wandb==0.15.0
+wandb_osh
+imageio

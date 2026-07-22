@@ -92,6 +92,14 @@ class LeggedRobot(BaseTask):
             self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
         self.post_physics_step()
+        # 로깅 추가
+        if not hasattr(self, '_debug_step_count'):
+            self._debug_step_count = 0
+        self._debug_step_count += 1
+        if self._debug_step_count % 20 == 0:
+            pos = self.root_states[self.robot_actor_idxs[0], 0:3]
+            quat = self.root_states[self.robot_actor_idxs[0], 3:7]
+            # print(f"[STEP {self._debug_step_count}] env0 pos={pos} quat={quat}")
 
         # return clipped obs, clipped states (None), rewards, dones and infos
         clip_obs = self.cfg.normalization.clip_observations
@@ -850,7 +858,8 @@ class LeggedRobot(BaseTask):
         Args:
             env_ids (List[int]): Environemnt ids
         """
-        self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(0.5, 1.5, (len(env_ids), self.num_dof),
+        # 랜덤화 초기화 값 수정 (0.5, 1.5) > (0.8, 1.2)
+        self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(0.8, 1.2, (len(env_ids), self.num_dof),
                                                                         device=self.device)
         self.dof_vel[env_ids] = 0.
 
@@ -893,6 +902,10 @@ class LeggedRobot(BaseTask):
                                                      requires_grad=False)-0.5)*torch.tensor([0, 0, cfg.terrain.yaw_init_range], device=self.device)
         self.root_states[robot_env_ids,3:7] = quat_from_euler_xyz(random_yaw_angle[:,0], random_yaw_angle[:,1], random_yaw_angle[:,2])
             
+        # 로깅 추가
+        # if 0 in env_ids:
+            # print(f"[RESET] env0 root pos/quat: {self.root_states[self.robot_actor_idxs[0], 0:7]}")
+
         # base velocities
         self.root_states[robot_env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(robot_env_ids), 6),
                                                            device=self.device)  # [7:10]: lin vel, [10:13]: ang vel
@@ -1294,8 +1307,14 @@ class LeggedRobot(BaseTask):
             Looks for self._reward_<REWARD_NAME>, where <REWARD_NAME> are names of all non zero reward scales in the cfg.
         """
         # reward containers
+        # kick reward 추가
         from dribblebot.rewards.soccer_rewards import SoccerRewards
-        reward_containers = { "SoccerRewards": SoccerRewards}
+        from dribblebot.rewards.kick_rewards import KickRewards
+
+        reward_containers = {
+            "SoccerRewards": SoccerRewards,
+            "KickRewards": KickRewards,
+        }
         self.reward_container = reward_containers[self.cfg.rewards.reward_container_name](self)
 
         # remove zero scales + multiply non-zero ones by dt
@@ -1335,10 +1354,13 @@ class LeggedRobot(BaseTask):
         all_assets = []
 
         # create robot
+        # Go2 추가
         from dribblebot.robots.go1 import Go1
+        from dribblebot.robots.go2 import Go2
 
         robot_classes = {
             'go1': Go1,
+            'go2': Go2,
         }
 
         self.robot = robot_classes[self.cfg.robot.name](self)
@@ -1616,7 +1638,8 @@ class LeggedRobot(BaseTask):
             # create a grid of robots
             num_cols = np.floor(np.sqrt(len(env_ids)))
             num_rows = np.ceil(self.num_envs / num_cols)
-            xx, yy = torch.meshgrid(torch.arange(num_rows), torch.arange(num_cols))
+            # xx, yy = torch.meshgrid(torch.arange(num_rows), torch.arange(num_cols))
+            xx, yy = torch.meshgrid(torch.arange(num_rows, device=self.device), torch.arange(num_cols, device=self.device))
             spacing = cfg.env.env_spacing
             self.env_origins[env_ids, 0] = spacing * xx.flatten()[:len(env_ids)]
             self.env_origins[env_ids, 1] = spacing * yy.flatten()[:len(env_ids)]

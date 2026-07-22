@@ -369,6 +369,12 @@ class Cfg(PrefixProto, cli=False):
         dribbling_robot_ball_yaw = 0.0
         dribbling_ball_vel_norm = 0.0
         dribbling_ball_vel_angle = 0.0
+
+        # kick 관련 config
+        kicking_ball_vel = 0.0
+        kick_contact = 0.0
+        kick_hold = 0.0
+   
         gripper_handle_pos = 0.0
         gripper_handle_height = 0.0
         turn_handle = 0.0

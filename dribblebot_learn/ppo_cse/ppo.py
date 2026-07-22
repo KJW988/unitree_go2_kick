@@ -84,7 +84,8 @@ class PPO:
     def process_env_step(self, rewards, dones, infos):
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-        self.transition.env_bins = infos["env_bins"]
+        # self.transition.env_bins = infos["env_bins"]
+        self.transition.env_bins = infos.get("env_bins", torch.zeros(rewards.shape[0], device=rewards.device))
         # Bootstrapping on time outs
         if 'time_outs' in infos:
             self.transition.rewards += PPO_Args.gamma * torch.squeeze(

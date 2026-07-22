@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# C++ / Build artifacts
+build/
+bin/
+obj/
+.cache/
+
+# Weights & Biases (W&B) logs and local sync files
+wandb/
+*.wandb
+wandb_osh/
+.wandb_osh_command_dir/
+
+# PyTorch Large Checkpoint Files (Exclude raw heavy .pt / .jit, Keep exported .onnx)
+tmp/legged_data/*.pt
+tmp/legged_data/*.jit
+!*.onnx
+
+# Isaac Gym / Physics cache
+*.vhacd
+.isaacgym/
+
+# Environments & IDEs
+.vscode/
+.idea/
+.venv/
+env/
+venv/
+ENV/
+
+# Logs & Temporary files
+MASTER_PLAN.md
+*.log
+*.swp
+*.swo
+.DS_Store
