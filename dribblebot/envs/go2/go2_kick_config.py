@@ -66,7 +66,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.sigma_rew_neg = 5
     _.tracking_sigma = 0.25
     _.kick_quality_threshold = 0.6   # r_kick(0~1)이 이 값 넘으면 Pursue&Strike -> Hold 전환 (초반 학습 가속)
-    _.kick_vel_target = 1.5          # m/s. 초반 신호 포착용 목표 공 속도 (1.5m/s로 초반 킥 탐색 가속)
+    _.kick_vel_target = 2.0          # m/s. 초반 크레딧 할당 신호 포착용 목표 공 속도
     _.soft_dof_pos_limit = 0.9
     _.base_height_target = 0.34
 
@@ -95,7 +95,12 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     # 킥 전용 신규 항 (kick_rewards.py) - dribbling_ball_vel(4.0)과 같은 자릿수에서 시작
     _.kicking_ball_vel = 3.0
     _.kick_contact = 3.0
-    _.kick_hold = 2.0
+    # 접근 보행 시 정갈한 4족 교차 보행(Trot Gait) 형성 보상 (soccer_rewards.py 내장 함수)
+    _.tracking_contacts_shaped_force = 1.0
+    _.tracking_contacts_shaped_vel = 1.0
+    _.gait_force_sigma = 100.0
+    _.gait_vel_sigma = 10.0
+
     # 드리블 태스크와 동일하게 base 속도 직접 트래킹은 끔 (로코모션은 부수적으로만 발생)
     _.tracking_lin_vel = 0.0
     _.tracking_ang_vel = 0.0
