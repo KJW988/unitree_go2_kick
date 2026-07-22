@@ -74,7 +74,17 @@ class KickRewards(SoccerRewards):
         ball_pos = self.env.object_pos_world_frame.unsqueeze(1)
         dist = torch.norm(foot_pos - ball_pos, dim=-1)
         min_dist = torch.min(dist, dim=1).values
+<<<<<<< HEAD
+
+        # 공 접근 임팩트 시 지지다리(3개) 중 최소 2개 이상이 바닥을 단탄히 받치도록 강제 (4다리 허우적거림 편법 차단)
+        support_legs = self.env.feet_indices[1:]
+        support_contact = torch.norm(self.env.contact_forces[:, support_legs, :2], dim=-1) > 1.0
+        support_gate = (torch.sum(support_contact.float(), dim=-1) >= 2.0).float()
+
+        return torch.exp(-4.0 * torch.square(min_dist)) * (0.5 + 0.5 * support_gate)
+=======
         return torch.exp(-4.0 * torch.square(min_dist))
+>>>>>>> 0d0d8a3 (feat: Initial commit-kick RL learning)
 
     # ---- Hold 단계 (r_kick >= threshold일 때만 활성) ----
     # Su2025: "Once r_kick exceeds the threshold... the robot is rewarded for
