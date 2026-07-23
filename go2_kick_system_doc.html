@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unitree Go2 RL Kicking System Architecture & Technical Specifications</title>
+    <!-- Google Fonts & MathJax -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@300;400;600;700;800&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        :root {
+            --bg-dark: #07090e;
+            --bg-card: rgba(18, 22, 31, 0.85);
+            --bg-card-hover: rgba(30, 37, 50, 0.95);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --border-highlight: rgba(56, 189, 248, 0.4);
+            --accent-blue: #38bdf8;
+            --accent-purple: #c084fc;
+            --accent-cyan: #22d3ee;
+            --accent-green: #4ade80;
+            --accent-orange: #fb923c;
+            --accent-red: #f87171;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2.5rem 1rem;
+            background-image: 
+                radial-gradient(at 10% 10%, rgba(56, 189, 248, 0.12) 0px, transparent 40%),
+                radial-gradient(at 90% 90%, rgba(192, 132, 252, 0.12) 0px, transparent 40%);
+            background-attachment: fixed;
+        }
+
+        .container {
+            max-width: 1350px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        header {
+            text-align: center;
+            margin-bottom: 3.5rem;
+            padding: 3rem 2rem;
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color);
+            border-radius: 28px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+            position: relative;
+            overflow: hidden;
+        }
+
+        header::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue), var(--accent-purple), var(--accent-green));
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.4rem 1.2rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--accent-blue);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            margin-bottom: 1.2rem;
+        }
+
+        h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 3rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #ffffff 0%, var(--accent-blue) 40%, var(--accent-purple) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1.2rem;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 1.2rem;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        /* Section Titles */
+        .section-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.9rem;
+            font-weight: 800;
+            margin: 3.5rem 0 1.75rem 0;
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            color: var(--text-primary);
+        }
+
+        .section-title::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 28px;
+            background: linear-gradient(180deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 4px;
+        }
+
+        /* Layout Grids */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+            gap: 1.75rem;
+        }
+
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 1.75rem;
+        }
+
+        /* Glassmorphism Cards */
+        .card {
+            background: var(--bg-card);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+        }
+
+        .card:hover {
+            border-color: var(--border-highlight);
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(56, 189, 248, 0.15);
+        }
+
+        .card h3 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 1.2rem;
+            color: var(--accent-blue);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        /* Formula Boxes */
+        .formula-box {
+            background: rgba(10, 13, 20, 0.95);
+            border-left: 4px solid var(--accent-purple);
+            border-radius: 12px;
+            padding: 1.3rem;
+            margin: 1.2rem 0;
+            font-family: 'Fira Code', monospace;
+            overflow-x: auto;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            border-right: 1px solid rgba(255,255,255,0.05);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .formula-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: var(--accent-purple);
+            text-transform: uppercase;
+            margin-bottom: 0.6rem;
+            letter-spacing: 0.08em;
+        }
+
+        /* Status Tags */
+        .status-tag {
+            padding: 0.25rem 0.75rem;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+
+        .status-active { background: rgba(74, 222, 128, 0.15); color: var(--accent-green); border: 1px solid rgba(74, 222, 128, 0.3); }
+        .status-fix { background: rgba(248, 113, 113, 0.15); color: var(--accent-red); border: 1px solid rgba(248, 113, 113, 0.3); }
+        .status-plan { background: rgba(251, 146, 60, 0.15); color: var(--accent-orange); border: 1px solid rgba(251, 146, 60, 0.3); }
+        .status-ref { background: rgba(192, 132, 252, 0.15); color: var(--accent-purple); border: 1px solid rgba(192, 132, 252, 0.3); }
+
+        /* Tables */
+        .custom-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.2rem 0;
+            border-radius: 14px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .custom-table th, .custom-table td {
+            padding: 1.1rem 1.3rem;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .custom-table th {
+            background: rgba(30, 37, 50, 0.95);
+            color: var(--accent-blue);
+            font-weight: 700;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .custom-table td {
+            background: rgba(18, 22, 31, 0.7);
+            border-top: 1px solid var(--border-color);
+            font-size: 0.95rem;
+        }
+
+        .custom-table tr:hover td {
+            background: rgba(56, 189, 248, 0.08);
+        }
+
+        code {
+            font-family: 'Fira Code', monospace;
+            background: rgba(255, 255, 255, 0.08);
+            padding: 0.2rem 0.5rem;
+            border-radius: 6px;
+            color: var(--accent-cyan);
+            font-size: 0.9em;
+        }
+
+        /* Timeline Roadmap */
+        .timeline {
+            position: relative;
+            padding-left: 2.2rem;
+            border-left: 2px solid var(--border-color);
+            margin: 1.5rem 0;
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 2.2rem;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -2.7rem;
+            top: 0.25rem;
+            width: 1.1rem;
+            height: 1.1rem;
+            border-radius: 50%;
+            background: var(--bg-dark);
+            border: 3px solid var(--accent-blue);
+        }
+
+        .timeline-item.completed::before {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+        }
+
+        .timeline-title {
+            font-weight: 700;
+            font-size: 1.15rem;
+            color: var(--text-primary);
+            margin-bottom: 0.4rem;
+        }
+
+        .timeline-desc {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        /* Trend Flow Box */
+        .trend-box {
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.05) 0%, rgba(192, 132, 252, 0.05) 100%);
+            border: 1px solid var(--border-highlight);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 5rem;
+            padding: 2.5rem;
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            border-top: 1px solid var(--border-color);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Header -->
+    <header>
+        <div class="badge">Unitree Go2 Reinforcement Learning</div>
+        <h1>Precision Kicking System & Technical Specifications</h1>
+        <p>Isaac Gym 병렬 강화학습 기반 Go2 로봇 킥 파이프라인, 보상 수식 설계, FIFA 5호 규격 검증 및 실기 배포 기술 명세서</p>
+    </header>
+
+    <!-- 0. Research Paradigm Shift & Trend -->
+    <div class="section-title">0. 사족보행 로봇 축구 킥 연구 동향 (Research Trend & Flow)</div>
+    <div class="trend-box">
+        <h3 style="color: var(--accent-cyan); font-size: 1.25rem; margin-bottom: 1rem;">🌐 3세대 패러다임 변화의 흐름</h3>
+        <table class="custom-table" style="margin: 0;">
+            <thead>
+                <tr>
+                    <th>세대 (Generation)</th>
+                    <th>대표 접근 방식</th>
+                    <th>한계점 및 비판점</th>
+                    <th>대표 연구 및 표준</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>1세대 (2018~2021)</strong><br>Analytic MPC & Gait</td>
+                    <td>수동 수학 모델 (Model Predictive Control) 기반 킥 궤적 계산</td>
+                    <td>변형 가능한 공(축구공)이나 불규칙 지면 대응 불가, 속도가 느림</td>
+                    <td>RoboCup Quadruped Traditional Control</td>
+                </tr>
+                <tr>
+                    <td><strong>2세대 (2022~2023)</strong><br>MoCap / Bezier Reference Tracking RL</td>
+                    <td>모션 캡처(MoCap) 데이터 또는 Bezier 킥 궤적을 <strong>강화학습으로 추적(Tracking)</strong></td>
+                    <td>고가의 모션 캡처 장비 필수, 사전 정의된 궤적 밖의 굴러오는 공 대응 불가</td>
+                    <td>Ji et al. (IROS 2022, Berkeley arXiv:2208.01160)</td>
+                </tr>
+                <tr>
+                    <td><strong>3세대 (2024~2026, Current SOTA)</strong><br>Fully Autonomous End-to-End Multi-Stage RL</td>
+                    <td><strong>레퍼런스 모션 0개 (Zero Reference)</strong>. 온보드 3D LiDAR/카메라 + 상태조건부 보상 Shaping</td>
+                    <td>강화학습 편법(Exploitation) 방지를 위한 정밀한 보상 공학(Reward Engineering) 필요</td>
+                    <td><strong>Su et al. (CoRL 2025)</strong>, <strong>RoboNaldo (2026)</strong>, <strong>DribbleBot (MIT 2023)</strong><br>👉 <em><strong>우리 시스템의 채택 패러다임</strong></em></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 1. System Architecture & Physical Hardware Specifications -->
+    <div class="section-title">1. 시스템 하드웨어 & 물리 규격 (Hardware & Sim Specifications)</div>
+    <div class="grid-2">
+        <div class="card">
+            <h3>🤖 Unitree Go2 실측 검증 하드웨어 규격 <span class="status-tag status-active">VERIFIED</span></h3>
+            <ul>
+                <li><strong>URDF 모델</strong>: Unitree 공식 <code>resources/robots/go2/urdf/go2.urdf</code></li>
+                <li><strong>기립 목표 높이 (Base Height Target)</strong>: <code>0.38m</code> (38cm, Go2 실측 스펙)</li>
+                <li><strong>스폰 초기 높이</strong>: <code>pos = [0.0, 0.0, 0.42]</code> (42cm 착지)</li>
+                <li><strong>대칭 관절 각도 (Default DOF Pos)</strong>: Thigh = <code>0.8</code>, Calf = <code>-1.5</code>, Hip = <code>0.1/-0.1</code> (4다리 완벽 대칭 평평 서기)</li>
+                <li><strong>어깨 링크 앤코딩 Handle</strong>: <code>FR_hip</code> (기존 Go1 명칭 <code>FR_thigh_shoulder</code> 오인덱싱 수정 완결)</li>
+                <li><strong>모터 PD 제어기</strong>: Kp = <code>35.0</code>, Kd = <code>0.5</code> (CoRL 2025 실물 배포 기준)</li>
+                <li><strong>제어 주기 (Control Decimation)</strong>: 50Hz (dt = 0.02s)</li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h3>⚽ FIFA 공식 5호 축구공 정밀 규격 <span class="status-tag status-active">FIFA SIZE 5</span></h3>
+            <ul>
+                <li><strong>공식 규격 명칭</strong>: FIFA Approved Size 5 Official Match Ball</li>
+                <li><strong>반지름 (Radius)</strong>: <code>0.11m</code> (11cm, 지름 22cm 정석 중간값)</li>
+                <li><strong>질량 (Mass)</strong>: <code>0.43kg</code> (430g, 공식 규격 410g~450g 정중앙값)</li>
+                <li><strong>초기 스폰 위치</strong>: <code>ball_init_pos = [0.8, 0.0, 0.11]</code> (지면에 딱 닿아 스폰)</li>
+                <li><strong>스폰 범위 무작위화</strong>: $x \in [0.4\text{m}, 1.2\text{m}]$, $y \in [-0.3\text{m}, +0.3\text{m}]$</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- 2. Core Mathematical Reward Modeling -->
+    <div class="section-title">2. 핵심 보상 수식 설계 (Mathematical Reward Design)</div>
+    <div class="grid-2">
+
+        <!-- Universal Settling Gate -->
+        <div class="card">
+            <h3>1. 1.5초 착지 안정화 게이트 (Universal Settling Gate)</h3>
+            <p>로봇이 스폰/리셋 직후 1.5초(75 스텝) 동안은 공을 차거나 접근하지 않고, 4다리로 균형 있게 서는 착지 안정화에만 전념하도록 모든 태스크 보상을 차단합니다.</p>
+            <div class="formula-box">
+                <div class="formula-title">Mathematical Formula</div>
+                $$\text{gate}_{\text{settled}} = \mathbb{I}(\text{buf}_{\text{ep\_len}} > 75)$$
+                $$R_{\text{task\_total}} = R_{\text{task}} \times \text{gate}_{\text{settled}}$$
+            </div>
+            <p><strong>효과</strong>: 스폰 직후 조급하게 발을 흔들거나 무릎이 착지하기도 전에 허우적거리는 현상 완전 차단.</p>
+        </div>
+
+        <!-- Anti-Suicide Exponential Clipping -->
+        <div class="card">
+            <h3>2. 일찍 죽기(Suicide Exploit) 방지 지수 곱셈 보상</h3>
+            <p>Ji et al. (IROS 2022) 지수 곱셈 수식을 적용하여 매 스텝 보상이 항상 0 이상($R_{\text{step}} \ge 0$)이 되도록 유지함으로써 일찍 죽는 꼼수를 완전 봉쇄합니다.</p>
+            <div class="formula-box">
+                <div class="formula-title">Ji22-Style Exponential Reward Scaling</div>
+                $$R_{\text{step}} = R_{\text{pos}} \times \exp\left(\frac{R_{\text{neg}}}{\sigma}\right) \ge 0$$
+            </div>
+            <p><strong>효과</strong>: 오랫동안 버티며 공을 차는 것이 400스텝 동안 계속 보상을 받아 일찍 죽는 것보다 무조건 압도적인 보상을 얻음.</p>
+        </div>
+
+        <!-- Base Height & Posture Penalty -->
+        <div class="card">
+            <h3>3. 몸통 높이 유지 & 상체 전방 숙임 억제 보상</h3>
+            <p>Go2 실측 높이($0.38\text{m}$) 이탈 및 상체가 전방으로 꼬꾸라지는 Pitch 각도를 감점하여 무게중심을 뒷다리로 이동시킵니다.</p>
+            <div class="formula-box">
+                <div class="formula-title">Height & Pitch Forward Penalty</div>
+                $$R_{\text{base\_height}} = -2.0 \cdot (z_{\text{base}} - 0.38)^2$$
+                $$R_{\text{pitch\_forward\_penalty}} = -5.0 \cdot (\max(0, \theta_{\text{pitch}}))^2$$
+            </div>
+            <p><strong>효과</strong>: 웅크림 및 고개 처박기 동작 완전 차단, 꼿꼿한 서기 유지.</p>
+        </div>
+
+        <!-- Kick Contact Hard Gate -->
+        <div class="card">
+            <h3>4. 3지점 수직 지지 & 높이 하드 게이트 킥 (Kick Contact)</h3>
+            <p>공에 가까운 1개 앞다리만 킥 발로 선택하고, 나머지 3개 다리의 수직 지지력($F_z > 1.0\text{N}$)과 몸통 높이($h > 0.25\text{m}$)가 충족될 때만 접촉 보상을 부여합니다.</p>
+            <div class="formula-box">
+                <div class="formula-title">Mathematical Formula</div>
+                $$\text{gate}_{\text{support}} = \mathbb{I}(N_{\text{stance\_legs\_Fz}} \ge 2), \quad \text{gate}_{\text{height}} = \mathbb{I}(z_{\text{base}} > 0.25\text{m})$$
+                $$R_{\text{kick\_contact}} = \exp(-4.0 \cdot d_{\text{foot\_ball}}^2) \cdot \text{gate}_{\text{support}} \cdot \text{gate}_{\text{height}} \cdot \text{gate}_{\text{settled}}$$
+            </div>
+            <p><strong>효과</strong>: 몸 전체를 공에 던지는 다이빙/슬라이딩 꼼수 보상 0점 처리.</p>
+        </div>
+
+    </div>
+
+    <!-- 3. Literature & Codebase Cross-Validation -->
+    <div class="section-title">3. 학술 논문 및 코드 레포 비교 (Literature Validation)</div>
+    <div class="card" style="margin-bottom: 2rem;">
+        <table class="custom-table">
+            <thead>
+                <tr>
+                    <th>연구 / 논문명</th>
+                    <th>접근 패러다임</th>
+                    <th>킥 방식</th>
+                    <th>우리 코드와의 비교 & 부합 여부</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Su et al. (CoRL 2025)</strong><br>arXiv:2505.13834</td>
+                    <td><span class="status-tag status-active">End-to-End</span><br>Hierarchical MARL</td>
+                    <td>Pursue & Strike ➔ Hold 2단계 게이팅</td>
+                    <td><strong>100% 일치</strong>. Su et al. Table III의 Pursue/Strike/Hold 2단계 상태조건부 게이팅 구조를 완벽 구현.</td>
+                </tr>
+                <tr>
+                    <td><strong>RoboNaldo (2026)</strong><br>OpenDriveLab (arXiv:2606.11092)</td>
+                    <td><span class="status-tag status-plan">Motion Prior</span><br>3단계 커리큘럼</td>
+                    <td>Instant Interaction Reward + 수직 지지력 ($F_z$)</td>
+                    <td><strong>수식 이식 완료</strong>. RoboNaldo Eq.1의 $F_z > 1.0\text{N}$ 3지점 지지력 수식을 우리 킥 접촉 보상에 성공적으로 접목.</td>
+                </tr>
+                <tr>
+                    <td><strong>Ji et al. (IROS 2022)</strong><br>UC Berkeley (arXiv:2208.01160)</td>
+                    <td><span class="status-tag status-plan">Motion Prior</span><br>Bezier Trajectory Tracking</td>
+                    <td>사전 정의된 킥 궤적 추적</td>
+                    <td><strong>패러다임 차이</strong>. Ji et al.은 수동 궤적 추적이나, 우리 코드는 레퍼런스 모션 없이 자유 탐색하는 End-to-End 방식 적용.</td>
+                </tr>
+                <tr>
+                    <td><strong>DribbleBot (MIT 2023)</strong><br>Science Robotics</td>
+                    <td><span class="status-tag status-active">End-to-End</span><br>Isaac Gym Base Code</td>
+                    <td>공 드리블 전용 (킥 태스크 없음)</td>
+                    <td><strong>Base 코드베이스</strong>. DribbleBot의 <code>soccer_rewards.py</code> 관측/접근 보상을 베이스로 상속하여 킥 전용 클래스 확장.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 4. Anti-Exploitation Issue Resolution Wall -->
+    <div class="section-title">4. 꼼수 방지 및 물리 이슈 해결 벽 (Anti-Exploitation Wall)</div>
+    <div class="grid-3">
+        <div class="card">
+            <h3>Issue 10: URDF FR_hip Handle 버그 <span class="status-tag status-fix">RESOLVED</span></h3>
+            <p>Go1 전용 명칭(<code>FR_thigh_shoulder</code>) 오인덱싱으로 distance 계산 시 뒷다리(<code>RR_foot</code>)를 바라보던 버그 수정.</p>
+            <p style="margin-top:0.5rem;"><strong>해결</strong>: Go2 규격인 <code>FR_hip</code> 링크 명칭으로 호환성 보정 완료.</p>
+        </div>
+
+        <div class="card">
+            <h3>Issue 9: 누락 보상 함수 구현 <span class="status-tag status-fix">RESOLVED</span></h3>
+            <p><code>base_height</code>, <code>lin_vel_z</code>, <code>ang_vel_xy</code> 수식이 코드에 없어 감점이 0점으로 무시되던 현상.</p>
+            <p style="margin-top:0.5rem;"><strong>해결</strong>: <code>KickRewards</code> 클래스 내에 파이썬 실행 함수 3종 직접 구현 완료.</p>
+        </div>
+
+        <div class="card">
+            <h3>Issue 8: 무릎/종아리 접촉 꼼수 <span class="status-tag status-fix">RESOLVED</span></h3>
+            <p>발바닥 대신 무릎/종아리(<code>calf</code>/<code>thigh</code>)를 바닥에 대고 꿇어앉아 균형을 잡던 현상.</p>
+            <p style="margin-top:0.5rem;"><strong>해결</strong>: <code>terminate_after_contacts_on = ["base", "thigh", "calf", "Head_upper", "Head_lower"]</code> 설정. 무릎 접촉 시 즉시 실패 리셋.</p>
+        </div>
+
+        <div class="card">
+            <h3>Issue 7: 전방 다이빙/몸 던지기 <span class="status-tag status-fix">RESOLVED</span></h3>
+            <p>공에 다가서서 차는 대신 몸 전체를 공으로 던져 다이빙하며 발을 가져다 대던 현상.</p>
+            <p style="margin-top:0.5rem;"><strong>해결</strong>: <code>_reward_kick_contact</code>에 지지다리 2개 이상 + 몸통 높이 0.25m 이상 조건 하드 게이트 적용.</p>
+        </div>
+
+        <div class="card">
+            <h3>Issue 6: 킥 후 다리 뻗고 눕기 <span class="status-tag status-fix">RESOLVED</span></h3>
+            <p>공을 찬 후 멈춰 있으라는 Hold 보상을 타먹으려고 앞다리를 뻗은 채 바닥에 누워서 쉬던 현상.</p>
+            <p style="margin-top:0.5rem;"><strong>해결</strong>: Hold 보상 수식에 관절 복귀 항 <code>exp(-0.2 * dof_pos_error)</code> 추가 및 높이 리셋 조건 활성화.</p>
+        </div>
+
+        <div class="card">
+            <h3>Issue 5: CUDA Memory Segfault <span class="status-tag status-fix">RESOLVED</span></h3>
+            <p>환경 수 4096/8192개 확장 시 PhysX GPU contact pairs 버퍼 부족으로 C++ 세그멘테이션 오류 발생.</p>
+            <p style="margin-top:0.5rem;"><strong>해결</strong>: <code>max_gpu_contact_pairs = 2**25</code> (3,355만 개) 설정 및 4096 병렬 환경 고정으로 최적화.</p>
+        </div>
+    </div>
+
+    <!-- 5. Master Plan Roadmap -->
+    <div class="section-title">5. 마스터플랜 개발 로드맵 (Masterplan Roadmap)</div>
+    <div class="card">
+        <div class="timeline">
+            <div class="timeline-item completed">
+                <div class="timeline-title">v0 Milestone: 킥 물리 기반 및 꼼수 차단 완료 (Current Phase)</div>
+                <div class="timeline-desc">Fixed Joint 메쉬 복원, 1.5초 착지 게이트, 3지점 지지 킥, 무릎/머리 리셋 조건, CoM 후방 이동 보상 구축 완수.</div>
+            </div>
+            <div class="timeline-item">
+                <div class="timeline-title">Phase 1: 시각적 평가 및 키보드 제어 (`scripts/play_kick.py`)</div>
+                <div class="timeline-desc">체크포인트 `.pt` 로드 후 키보드로 방향 명령 주입하며 오프라인 MP4 렌더링 및 3족 지지 킥 시각 검증.</div>
+            </div>
+            <div class="timeline-item">
+                <div class="timeline-title">Phase 2: v1 AprilTag 3-Target 정밀 슈팅 RL (`_reward_kick_target_precision`)</div>
+                <div class="timeline-desc">1, 2, 3번 버튼 선택에 따른 AprilTag 타겟 좌표 관측치 추가 ($num\_obs = 78$) 및 궤적 외삽 보상 수식 도입.</div>
+            </div>
+            <div class="timeline-item">
+                <div class="timeline-title">Phase 3: v2 동적 굴러오는 공 인터셉트 킥 (Dynamic Intercept Kick)</div>
+                <div class="timeline-desc">공 초기 속도 무작위화 ($[-1.0, 1.0]\text{m/s}$)를 통해 움직이는 공의 타격 타이밍 및 인터셉트 킥 학습.</div>
+            </div>
+            <div class="timeline-item">
+                <div class="timeline-title">Phase 4: Sim-to-Real Domain Randomization & ONNX Export</div>
+                <div class="timeline-desc">마찰계수([0.3, 1.6]), 질량 노이즈([-1.0, 3.0]kg), 모터 파워, 액션 딜레이 무작위화 후 <code>policy_go2_kick.onnx</code>로 내보내기.</div>
+            </div>
+            <div class="timeline-item">
+                <div class="timeline-title">Phase 5 & 6: 실세계 온보드 3D LiDAR + AprilTag & unitree_sdk2 배포</div>
+                <div class="timeline-desc">3D LiDAR RANSAC 구체 피팅($R=0.11\text{m}$) 공 인식 파이프라인 및 <code>unitree_sdk2</code> C++ 50Hz 저레벨 실물 로봇 배포.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer>
+        <p>Go2 EDU AprilTag 3-Target Precision Kicking System Specification • Generated for User Repository Integration</p>
+    </footer>
+</div>
+
+</body>
+</html>
