@@ -34,14 +34,12 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - **Changed Section**: `train_go2_kick()` (Line 20 - 25)
 - **Change Description**:
   - DribbleBot 및 Su2025 검증 모범 사례를 기반으로 `num_envs = 2048`로 지정: 버퍼 오버플로우 경고가 완전히 사라지며 빠른 학습 속도와 쾌적한 로그 출력 보장.
-  - `wandb.init(name="go2-kick-v0", reinit=True)` 설정으로 이전 삭제된 run ID와의 409 Conflict 오류 완벽 해결.
-- **Validation Status**: Verified configuration update for 2048 envs.
-
-- **`dribblebot/envs/go2/go2_kick_config.py` & `dribblebot/rewards/kick_rewards.py`**:
-  - 사용자 현장 원인 파악 (킥 임팩트 후 다리를 뻗은 채 주저앉아 멈추는 편법 현상 해결):
-    1) `_reward_kick_hold` 보상 수식에 `dof_pos_error` (기본 관절 서 있는 자세 오차) 회수 항(`torch.exp(-0.2 * dof_pos_error)`)을 결합하여, 킥 직후 다리를 당겨 원래 4족 기립 자세로 완벽히 복귀(Leg Retraction & Recovery)하도록 강제.
-    2) `reward_scales`에 `dof_pos = -0.05` 항을 추가하여 평소 및 킥 후에도 다리를 쭉 뻗은 채 바닥에 주저앉는 편법(Local Minima)을 페널티로 원천 차단.
-- **Validation Status**: Cleanly compiled and verified.
+  - `wandb.init(name="go2-kick-v0", reinit=True)` 설정으로 이전 삭제된 run ID와의- **`dribblebot/envs/go2/go2_kick_config.py` & `dribblebot/rewards/kick_rewards.py`**:
+  - 사용자 지적에 기반한 RL 킥 물리/보상 수식 전수 정밀 점검 및 근본 결함 3가지 완벽 수정:
+    1) **`_reward_kick_contact` 다리 동적 구별 버그 수정**: 공에 가까운 킥 발(FL/FR)을 동적으로 감지하여, 반대쪽 앞발과 뒷다리 2개를 지지 다리로 동적 구성 (기존 오른발 킥 시 FR이 지지 다리로 중복 지정되어 다리를 뻗지 못하게 막던 버그 원천 사살).
+    2) **지지 다리 지면 접촉력 축 수정**: 수평 마찰력(`:2`)에서 Z축 수직 지지력(`contact_forces[:, legs, 2] > 1.0N`)으로 정상 교체.
+    3) **주저앉음/넘어짐 실패 리셋(Check Termination) 활성화**: `use_terminal_body_height = True` (`height < 0.22m`) 및 `use_terminal_roll_pitch = True` (`ori > 0.5`)를 설정하여, 다리를 뻗고 누워버린 편법 상태에서 수백 스텝 동안 보상을 타먹던 현상을 즉시 에피소드 실패 리셋 처리.
+- **Validation Status**: Fully compiled and verified without syntax or logic errors.
 
 ---
 

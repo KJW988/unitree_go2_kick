@@ -68,17 +68,28 @@ class KickRewards(SoccerRewards):
     # 발-공 접촉은 물리스텝 3~5개 수준으로 매우 짧아 kicking_ball_vel 하나만으로는
     # 크레딧 할당이 잘 안 될 수 있습니다. 접근 자체에 별도 shaping을 줘서 완화합니다.
     def _reward_kick_contact(self):
-        # 킥 다리는 앞다리 2개(FL, FR)에만 한정하여 뒷다리 비비기 방지
-        front_feet_indices = self.env.feet_indices[:2]
+        # 1. 두 앞다리(FL:0, FR:1) 중 공에 더 가까운 발을 킥 다리로, 다른 하나를 지지 앞다리로 동적 선택
+        front_feet_indices = self.env.feet_indices[:2]  # [FL, FR]
         foot_pos = self.env.rigid_body_state.view(self.env.num_envs, -1, 13)[:, front_feet_indices, 0:3]
         ball_pos = self.env.object_pos_world_frame.unsqueeze(1)
-        dist = torch.norm(foot_pos - ball_pos, dim=-1)
+        dist = torch.norm(foot_pos - ball_pos, dim=-1)  # (num_envs, 2)
         min_dist = torch.min(dist, dim=1).values
 
-        # 공 접근 임팩트 시 지지다리(3개) 중 최소 2개 이상이 바닥을 단탄히 받치도록 강제 (4다리 허우적거림 편법 차단)
-        support_legs = self.env.feet_indices[1:]
-        support_contact = torch.norm(self.env.contact_forces[:, support_legs, :2], dim=-1) > 1.0
-        support_gate = (torch.sum(support_contact.float(), dim=-1) >= 2.0).float()
+        # 공에 더 가까운 앞발이 킥 발(kick_foot), 반대쪽 앞발이 지지 앞발(chosen_support_front)
+        kick_front_idx = torch.argmin(dist, dim=1)
+        non_kick_front_idx = 1 - kick_front_idx
+        batch_indices = torch.arange(self.env.num_envs, device=self.env.device)
+        chosen_support_front = front_feet_indices[non_kick_front_idx]
+
+        # 2. 지지 다리 3개 (반대쪽 앞다리 1개 + 뒷다리 2개)의 Z축 수직 지지력(contact_forces[:, :, 2] > 1.0N) 검증
+        contact_forces = self.env.contact_forces
+        rear_feet_indices = self.env.feet_indices[2:]  # [RL, RR]
+        rear_support = torch.sum(contact_forces[:, rear_feet_indices, 2] > 1.0, dim=-1).float()
+        front_support = (contact_forces[batch_indices, chosen_support_front, 2] > 1.0).float()
+
+        # 지지 다리 3개 중 최소 2개 이상이 바닥을 단단히 딛고 있을 때 지지 게이트 승인
+        total_support_cnt = rear_support + front_support
+        support_gate = (total_support_cnt >= 2.0).float()
 
         return torch.exp(-4.0 * torch.square(min_dist)) * (0.5 + 0.5 * support_gate)
 
