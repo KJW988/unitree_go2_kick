@@ -61,10 +61,10 @@ class VelocityTrackingEasyEnv(LeggedRobot):
         mass_alpha = min(1.0, it / 3000.0)
         self.cfg.domain_rand.added_mass_range = [-1.0 * mass_alpha, 2.0 * mass_alpha]
 
-        # 4. 공 스폰 거리 난이도: Iteration 0 [0.4m, 0.6m] -> Iteration 1500 [0.4m, 1.2m]
+        # 4. 공 스폰 거리 난이도: Iteration 0 (0.4m) -> Iteration 1500 (1.0m 범위 확대)
         spawn_alpha = min(1.0, it / 1500.0)
-        max_x_spawn = 0.6 + 0.6 * spawn_alpha
-        self.cfg.ball.init_pos_range = [0.40, max_x_spawn, 0.30, 0.0]
+        max_x_spawn = 0.40 + 0.60 * spawn_alpha
+        self.cfg.ball.init_pos_range = [max_x_spawn, 0.30, 0.0]
 
     def reset(self):
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
