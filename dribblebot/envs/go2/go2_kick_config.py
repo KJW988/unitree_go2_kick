@@ -42,7 +42,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.file = '/root/Desktop/workspace/expo/unitree_rl_gym/resources/robots/go2/urdf/go2.urdf'
     _.foot_name = "foot"
     _.penalize_contacts_on = ["thigh", "calf"]
-    _.terminate_after_contacts_on = ["base", "Head_upper", "Head_lower"]  # 머리가 땅에 박히면 즉시 실패 리셋
+    _.terminate_after_contacts_on = ["base", "thigh", "calf", "Head_upper", "Head_lower"]  # 무릎/종아리/허벅지/머리 바닥 닿으면 즉시 실패 리셋 (발바닥 서기 강제)
     _.self_collisions = 1  # unitree_rl_gym 공식값 (0: 활성화 시 링크 침범으로 인한 튀김/미끄러짐 유발 방지)
     _.collapse_fixed_joints = False      # Fixed joint 병합 비활성화 (충돌체 노출 & 찌그러짐 해결)
     _.flip_visual_attachments = True     # 또는 False로 조정하며 메쉬 뒤집힘 확인
