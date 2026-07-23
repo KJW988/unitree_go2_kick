@@ -171,10 +171,9 @@ class SoccerRewards(Rewards):
         return rew_vel_angle_tracking
 
     def _reward_pitch_forward_penalty(self):
-        # 고개가 앞으로 숙여지는 피치각 (pitch > 0) 억제 (무게중심을 뒤쪽으로 유지하도록 페널티)
+        # 몸통 피치각(pitch) 상하 이탈 감점 (앞다리 주저앉음 및 고개 처박기 완벽 차단)
         roll, pitch, yaw = get_euler_xyz(self.env.base_quat)
-        forward_pitch = torch.clamp(pitch, min=0.0)
-        return torch.square(forward_pitch)
+        return torch.square(pitch)
 
     def _reward_stance_legs_support(self):
         # 공에서 더 멀리 떨어진 앞다리 1개 + 뒷다리 2개 = 총 3개 지지 다리(Stance legs) 지지 보상

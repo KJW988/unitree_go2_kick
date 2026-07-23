@@ -72,16 +72,16 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     
     # 주저앉음/넘어짐 상태 편법 수백 스텝 유지 방지 (Check Termination 안전장치)
     _.use_terminal_body_height = True
-    _.terminal_body_height = 0.22    # 몸통 높이가 0.22m 미만으로 주저앉으면 즉시 실패 에피소드 리셋
+    _.terminal_body_height = 0.30    # 몸통 높이가 0.30m 미만으로 앞다리 웅크리거나 주저앉으면 즉시 실패 에피소드 리셋
     _.use_terminal_roll_pitch = True
-    _.terminal_body_ori = 0.50       # 롤/피치 기울기가 45도 이상 넘어지면 즉시 실패 에피소드 리셋
+    _.terminal_body_ori = 0.40       # 롤/피치 기울기가 23도 이상 기울어지면 즉시 실패 에피소드 리셋
 
     _ = Cnfg.reward_scales
-    _.base_height = -2.0             # 고개 쳐박기/몸통 쳐짐 방지 (목표 높이 0.38m 유지)
-    _.pitch_forward_penalty = -5.0   # 상체 전방 숙임/꼬꾸라짐 억제 (무게중심 뒤쪽 유지)
+    _.base_height = -10.0            # 고개 쳐박기/앞다리 웅크림 방지 (목표 높이 0.38m 강하게 유지)
+    _.pitch_forward_penalty = -10.0  # 상체 숙임/고개 처박기 상하 대칭 감점 강화
     _.stance_legs_support = 3.0        # 킥 다리를 제외한 3개 다리(반대쪽 앞다리+뒷다리2개) 단단한 지지 보상 (허우적거림 방지)
     _.lin_vel_z = -2.0               # 상하 요동 억제
-    _.ang_vel_xy = -0.05             # 롤/피치 흔들림 억제
+    _.ang_vel_xy = -0.5              # 롤/피치 흔들림 억제 상향
     _.ang_vel_z = -0.1               # 무의미한 제자리 팽이 회전 억제
     _.feet_slip = -0.08              # 지지 발 바닥 미끄러짐 억제
     _.action_smoothness_2 = -0.002   # 액션 떨림/갑작스러운 튐 부드럽게 억제
@@ -93,7 +93,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.dof_acc = -5.0e-7              # 관절 급격한 가속도/발작 억제 (모터열화 방지 및 부드러운 스윙)
     _.dof_pos = -0.01                # 기본 자세 이탈 약한 페널티 (킥 시 다리 들기를 억제하지 않도록 약하게 설정)
     _.dof_pos_limits = -10.0
-    _.orientation = -5.0
+    _.orientation = -10.0            # 평평한 수평 지지 유지 강력 강화
     _.collision = -5.0
     # 접근 단계 - SoccerRewards에 이미 있는 검증된 함수 재사용
     # (스케일은 train_dribbling.py에서 실제로 쓴 값 그대로 가져옴)
