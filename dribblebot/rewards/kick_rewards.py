@@ -64,9 +64,9 @@ class KickRewards(SoccerRewards):
         gate = (self._kick_quality() < threshold).float()
         return r_strike * gate
 
-    # ---- 접촉 shaping (제안 추가, RoboNaldo Eq.1 Instant Interaction Reward 방식) ----
-    # 발-공 접촉은 물리스텝 3~5개 수준으로 매우 짧아 kicking_ball_vel 하나만으로는
-    # 크레딧 할당이 잘 안 될 수 있습니다. 접근 자체에 별도 shaping을 줘서 완화합니다.
+    # ---- 접촉 shaping (RoboNaldo Eq.1 Instant Interaction Reward 방식) ----
+    # 발-공 접촉 보상. 반드시 서 있는 상태(3지점 지지 + 몸통 높이 유지)에서만 보상 부여.
+    # 다이빙/몸 던지기 편법을 완벽히 차단하기 위해 support_gate를 하드 게이트(0 or 1)로 적용.
     def _reward_kick_contact(self):
         # 1. 두 앞다리(FL:0, FR:1) 중 공에 더 가까운 발을 킥 다리로, 다른 하나를 지지 앞다리로 동적 선택
         front_feet_indices = self.env.feet_indices[:2]  # [FL, FR]
@@ -81,17 +81,21 @@ class KickRewards(SoccerRewards):
         batch_indices = torch.arange(self.env.num_envs, device=self.env.device)
         chosen_support_front = front_feet_indices[non_kick_front_idx]
 
-        # 2. 지지 다리 3개 (반대쪽 앞다리 1개 + 뒷다리 2개)의 Z축 수직 지지력(contact_forces[:, :, 2] > 1.0N) 검증
+        # 2. 지지 다리 3개의 Z축 수직 지지력 검증
         contact_forces = self.env.contact_forces
         rear_feet_indices = self.env.feet_indices[2:]  # [RL, RR]
         rear_support = torch.sum(contact_forces[:, rear_feet_indices, 2] > 1.0, dim=-1).float()
         front_support = (contact_forces[batch_indices, chosen_support_front, 2] > 1.0).float()
 
-        # 지지 다리 3개 중 최소 2개 이상이 바닥을 단단히 딛고 있을 때 지지 게이트 승인
+        # 3. 하드 게이트: 지지 다리 2개 미만이면 보상 = 0 (다이빙/몸 던지기 완전 차단)
         total_support_cnt = rear_support + front_support
         support_gate = (total_support_cnt >= 2.0).float()
 
-        return torch.exp(-4.0 * torch.square(min_dist)) * (0.5 + 0.5 * support_gate)
+        # 4. 몸통 높이 게이트: 주저앉으며 접근하는 편법도 차단 (높이 0.25m 이상 유지해야 보상)
+        base_height = self.env.root_states[self.env.robot_actor_idxs, 2]
+        height_gate = (base_height > 0.25).float()
+
+        return torch.exp(-4.0 * torch.square(min_dist)) * support_gate * height_gate
 
     # ---- Hold 단계 (r_kick >= threshold일 때만 활성) ----
     # Su2025: "Once r_kick exceeds the threshold... the robot is rewarded for
