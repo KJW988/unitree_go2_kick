@@ -54,3 +54,27 @@ Record of all issues encountered and resolved during the Go2 Kick RL debugging t
   1. `Cnfg.sim.physx.max_gpu_contact_pairs = 2 ** 26` (67,108,864, well exceeding 33,558,528 requirement).
   2. `Cnfg.sim.physx.default_buffer_size_multiplier = 10`.
 - **Status**: Resolved.
+
+---
+
+## Issue 6: Posture Collapse / Laying Down after Kick (Exploitation of Hold Reward)
+
+- **Problem Description**: Robot performed kick, then collapsed/laid down with front leg extended onto the floor to stay still.
+- **Root Cause**: `_reward_kick_hold` only rewarded low base linear velocity (`v_base ≈ 0`). The robot found a local minimum by laying down on the floor to remain still instead of staying upright.
+- **Resolution**:
+  1. Updated `_reward_kick_hold` to include posture recovery penalty `exp(-0.2 * dof_pos_error)`.
+  2. Enforced terminal fall resets in `go2_kick_config.py` (`use_terminal_body_height = True` for height < 0.22m, `use_terminal_roll_pitch = True` for tilt > 0.50 rad).
+- **Status**: Resolved.
+
+---
+
+## Issue 7: Forward Diving / Lunging Exploit into Ball (Exploitation of Contact Reward)
+
+- **Problem Description**: Robot lunged/dived forward onto its stomach to bring its front legs close to the ball rather than standing and kicking.
+- **Root Cause**:
+  1. `_reward_kick_contact()` used soft gating `(0.5 + 0.5 * support_gate)`, giving 50% reward even when airborne/diving.
+  2. `dof_pos = -0.05` penalty punished lifting front legs for a kick, favoring diving over leg swinging.
+- **Resolution**:
+  1. Updated `_reward_kick_contact()` to use strict hard gating (`support_gate * height_gate`), requiring ≥2 support legs with Z-force > 1.0N and base height > 0.25m.
+  2. Reduced `dof_pos` penalty to `-0.01` so leg lifting for kicks is not penalized.
+- **Status**: Resolved.

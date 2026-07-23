@@ -28,9 +28,9 @@ scripts/train_kick.py
                      ├── _reward_dribbling_robot_ball_pos()
                      ├── _reward_dribbling_robot_ball_yaw() [NaN Safe Clamped]
                      ├── _reward_ang_vel_z() [Spin suppression]
-                     ├── _reward_kicking_ball_vel()
-                     ├── _reward_kick_contact()
-                     └── _reward_kick_hold()
+                     ├── _reward_kicking_ball_vel() [Striking velocity reward]
+                     ├── _reward_kick_contact() [Hard-gated 3-leg support + height > 0.25m]
+                     └── _reward_kick_hold() [Posture recovery exp(-0.2*dof_pos_err)]
 ```
 
 ---
