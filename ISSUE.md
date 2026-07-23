@@ -87,3 +87,12 @@ Record of all issues encountered and resolved during the Go2 Kick RL debugging t
 - **Root Cause**: `terminate_after_contacts_on` only included `["base", "Head_upper", "Head_lower"]`. Contact on `thigh` and `calf` only incurred mild collision penalties without triggering episode resets, making knee-resting an easy stability shortcut.
 - **Resolution**: Updated `terminate_after_contacts_on = ["base", "thigh", "calf", "Head_upper", "Head_lower"]` in `go2_kick_config.py`. Any ground contact on knees/calves now immediately terminates and resets the episode, forcing the policy to stand strictly on its foot pads (`foot`).
 - **Status**: Resolved.
+
+---
+
+## Issue 9: Missing Reward Functions (`base_height`, `lin_vel_z`, `ang_vel_xy`) Not Being Called
+
+- **Problem Description**: Setting `reward_scales.base_height = -2.0`, `lin_vel_z = -2.0`, and `ang_vel_xy = -0.05` in `go2_kick_config.py` resulted in `rew_base_height: 0.0` in Wandb and had no physical effect on the robot. The robot pitched its head down and squatted without receiving any height penalty.
+- **Root Cause**: Neither `SoccerRewards` nor `KickRewards` defined the corresponding methods `_reward_base_height()`, `_reward_lin_vel_z()`, or `_reward_ang_vel_xy()`. Isaac Gym's dynamic reward resolution silently skipped these keys because no matching python methods existed.
+- **Resolution**: Explicitly implemented `_reward_base_height()` (target=0.38m), `_reward_lin_vel_z()`, and `_reward_ang_vel_xy()` in `dribblebot/rewards/kick_rewards.py`. Height sags and forward head dips are now actively penalized.
+- **Status**: Resolved.

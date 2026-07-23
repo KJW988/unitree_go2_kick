@@ -26,6 +26,21 @@ class KickRewards(SoccerRewards):
         rew_yaw = super()._reward_dribbling_robot_ball_yaw()
         return rew_yaw * self._settled_gate()
 
+    # ---- 누락되었던 보상/페널티 함수 추가 (base_height, lin_vel_z, ang_vel_xy) ----
+    def _reward_base_height(self):
+        # 몸통 높이가 목표 높이(base_height_target = 0.38m)에서 이탈할 때 페널티 부여
+        base_height = self.env.root_states[self.env.robot_actor_idxs, 2]
+        target_height = getattr(self.env.cfg.rewards, "base_height_target", 0.38)
+        return torch.square(base_height - target_height)
+
+    def _reward_lin_vel_z(self):
+        # 몸통 Z축 상하 튀김/요동 페널티
+        return torch.square(self.env.base_lin_vel[:, 2])
+
+    def _reward_ang_vel_xy(self):
+        # 몸통 롤/피치 각속도 흔들림 페널티
+        return torch.sum(torch.square(self.env.base_ang_vel[:, :2]), dim=1)
+
     # ---- 내부 헬퍼 (reward 함수가 아니라 _reward_ 접두사 없음 -> 자동 등록 안 됨) ----
     def _kick_quality(self):
         """
