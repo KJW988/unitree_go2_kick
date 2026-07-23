@@ -26,6 +26,11 @@ class KickRewards(SoccerRewards):
         rew_yaw = super()._reward_dribbling_robot_ball_yaw()
         return rew_yaw * self._settled_gate()
 
+    def _reward_dribbling_robot_ball_vel(self):
+        # 착지 안정화 1.5초 게이트 적용 (스폰 직후 착지 전 공 방향 이동 보상 억제)
+        rew_vel = super()._reward_dribbling_robot_ball_vel()
+        return rew_vel * self._settled_gate()
+
     # ---- 누락되었던 보상/페널티 함수 추가 (base_height, lin_vel_z, ang_vel_xy, dof_vel, still_standing) ----
     def _reward_still_standing(self):
         # 스폰 후 첫 1.5초(75스텝) 착지 구간 동안 잔발 딛기 없이 기본 자세로 미동도 없이 정지해 있으면 +3.0점 만점 부여

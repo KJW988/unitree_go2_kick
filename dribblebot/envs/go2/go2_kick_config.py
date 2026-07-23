@@ -42,7 +42,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.file = '/root/Desktop/workspace/expo/unitree_rl_gym/resources/robots/go2/urdf/go2.urdf'
     _.foot_name = "foot"
     _.penalize_contacts_on = ["thigh", "calf"]
-    _.terminate_after_contacts_on = ["base", "thigh", "calf", "Head_upper", "Head_lower"]  # 무릎/종아리/허벅지/머리 바닥 닿으면 즉시 실패 리셋 (발바닥 서기 강제)
+    _.terminate_after_contacts_on = ["base", "Head_upper", "Head_lower"]  # 몸통/머리 바닥 닿으면 즉시 실패 리셋 (thigh/calf는 킥 스윙 중 접촉 가능하므로 penalize_contacts_on에서만 감점)
     _.self_collisions = 1  # unitree_rl_gym 공식값 (0: 활성화 시 링크 침범으로 인한 튀김/미끄러짐 유발 방지)
     _.collapse_fixed_joints = False      # Fixed joint 병합 비활성화 (충돌체 노출 & 찌그러짐 해결)
     _.flip_visual_attachments = True     # 또는 False로 조정하며 메쉬 뒤집힘 확인
@@ -77,8 +77,8 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.terminal_body_ori = 0.70       # 롤/피치 기울기가 40도 이상 넘어지면 즉시 실패 에피소드 리셋 (스폰 즉시 리셋 루프 방지)
 
     _ = Cnfg.reward_scales
-    _.base_height = -10.0            # 고개 쳐박기/앞다리 웅크림 방지 (목표 높이 0.38m 강하게 유지)
-    _.pitch_forward_penalty = -10.0  # 상체 숙임/고개 처박기 상하 대칭 감점 강화
+    _.base_height = -5.0             # 고개 쳐박기/앞다리 웅크림 방지 (목표 높이 0.38m 유지, Ji22 exp 소멸 방지를 위해 -5.0)
+    _.pitch_forward_penalty = -5.0   # 상체 숙임/고개 처박기 상하 대칭 감점 (Ji22 exp 소멸 방지를 위해 -5.0)
     _.stance_legs_support = 3.0        # 킥 다리를 제외한 3개 다리(반대쪽 앞다리+뒷다리2개) 단단한 지지 보상 (허우적거림 방지)
     _.lin_vel_z = -2.0               # 상하 요동 억제
     _.ang_vel_xy = -0.5              # 롤/피치 흔들림 억제 상향
@@ -86,14 +86,14 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.feet_slip = -0.25              # 지지 발 바닥 미끄러짐/휘청거림 억제 상향
     _.action_smoothness_2 = -0.002   # 액션 떨림/갑작스러운 튐 부드럽게 억제
     _.feet_air_time = 0.0
-    _.still_standing = 3.0           # 첫 1.5초 착지 구간 미동도 없는 수평 정지 강력 보상 (잔발 딛기 완전 제거)
+    _.still_standing = 1.0           # 첫 1.5초 착지 구간 정지 보상 (킥 대비 과도한 정지 편향 방지를 위해 1.0으로 조정)
     _.dof_vel = -0.001               # 관절 각속도 감점 (제자리 흔들림/잔발 딛기 감점)
     _.torques = -0.0001
     _.action_rate = -0.05            # 액션 변화율 감점 상향 (다리 4개 허우적거림 억제)
     _.dof_acc = -5.0e-7              # 관절 급격한 가속도/발작 억제 (모터열화 방지 및 부드러운 스윙)
     _.dof_pos = -0.01                # 기본 자세 이탈 약한 페널티 (킥 시 다리 들기를 억제하지 않도록 약하게 설정)
     _.dof_pos_limits = -10.0
-    _.orientation = -10.0            # 평평한 수평 지지 유지 강력 강화
+    _.orientation = -5.0             # 평평한 수평 지지 유지 (Ji22 exp 소멸 방지를 위해 -5.0)
     _.collision = -5.0
     # 접근 단계 - SoccerRewards에 이미 있는 검증된 함수 재사용
     # (스케일은 train_dribbling.py에서 실제로 쓴 값 그대로 가져옴)
