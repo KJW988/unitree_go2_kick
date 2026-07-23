@@ -13,7 +13,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.name = "go2"
 
     _ = Cnfg.init_state
-    _.pos = [0.0, 0.0, 0.42]  # unitree_rl_gym go2_config.py 실측값 (Go1: 0.34m)
+    _.pos = [0.0, 0.0, 0.38]  # Go2 정석 기립 높이 (0.42m 낙하 충격 튀김 및 무한 리셋 바운스 방지)
     _.default_joint_angles = {  # Unitree 공식 Go2 실측 기립 관절 각도 (앞 0.8, 뒤 1.0에서 수평 유지)
         'FL_hip_joint': 0.1, 'RL_hip_joint': 0.1, 'FR_hip_joint': -0.1, 'RR_hip_joint': -0.1,
         'FL_thigh_joint': 0.8, 'RL_thigh_joint': 1.0, 'FR_thigh_joint': 0.8, 'RR_thigh_joint': 1.0,
@@ -72,9 +72,9 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     
     # 주저앉음/넘어짐 상태 편법 수백 스텝 유지 방지 (Check Termination 안전장치)
     _.use_terminal_body_height = True
-    _.terminal_body_height = 0.30    # 몸통 높이가 0.30m 미만으로 앞다리 웅크리거나 주저앉으면 즉시 실패 에피소드 리셋
+    _.terminal_body_height = 0.24    # 몸통 높이가 0.24m 미만으로 주저앉으면 즉시 실패 에피소드 리셋
     _.use_terminal_roll_pitch = True
-    _.terminal_body_ori = 0.40       # 롤/피치 기울기가 23도 이상 기울어지면 즉시 실패 에피소드 리셋
+    _.terminal_body_ori = 0.70       # 롤/피치 기울기가 40도 이상 넘어지면 즉시 실패 에피소드 리셋 (스폰 즉시 리셋 루프 방지)
 
     _ = Cnfg.reward_scales
     _.base_height = -10.0            # 고개 쳐박기/앞다리 웅크림 방지 (목표 높이 0.38m 강하게 유지)
