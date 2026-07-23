@@ -96,3 +96,12 @@ Record of all issues encountered and resolved during the Go2 Kick RL debugging t
 - **Root Cause**: Neither `SoccerRewards` nor `KickRewards` defined the corresponding methods `_reward_base_height()`, `_reward_lin_vel_z()`, or `_reward_ang_vel_xy()`. Isaac Gym's dynamic reward resolution silently skipped these keys because no matching python methods existed.
 - **Resolution**: Explicitly implemented `_reward_base_height()` (target=0.38m), `_reward_lin_vel_z()`, and `_reward_ang_vel_xy()` in `dribblebot/rewards/kick_rewards.py`. Height sags and forward head dips are now actively penalized.
 - **Status**: Resolved.
+
+---
+
+## Issue 10: Rigid Body Handle Name Bug in Go1-to-Go2 Porting (`FR_thigh_shoulder` vs `FR_hip`)
+
+- **Problem Description**: In `soccer_rewards.py`, `_reward_dribbling_robot_ball_vel()` and `_reward_dribbling_robot_ball_pos()` attempted to find rigid body handle `"FR_thigh_shoulder"`. In Go2 URDF, this link does not exist, causing `find_actor_rigid_body_handle` to return `-1`.
+- **Root Cause**: `-1` index resolved to the last link in Isaac Gym (`RR_foot`), causing distance and velocity projection to be computed relative to the back right foot rather than the front shoulder, distorting robot-ball approach vectors.
+- **Resolution**: Updated `soccer_rewards.py` to query `"FR_hip"` first (Go2 URDF link name) with fallback to `"FR_thigh_shoulder"` (Go1 URDF link name). Position and velocity vectors are now 100% accurate for Go2.
+- **Status**: Resolved.
