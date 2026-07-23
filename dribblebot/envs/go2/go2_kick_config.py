@@ -14,9 +14,9 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
 
     _ = Cnfg.init_state
     _.pos = [0.0, 0.0, 0.42]  # unitree_rl_gym go2_config.py 실측값 (Go1: 0.34m)
-    _.default_joint_angles = {  # Go2 대칭 서기 관절 각도 (뒷다리 고꾸라짐 방지)
+    _.default_joint_angles = {  # Unitree 공식 Go2 실측 기립 관절 각도 (앞 0.8, 뒤 1.0에서 수평 유지)
         'FL_hip_joint': 0.1, 'RL_hip_joint': 0.1, 'FR_hip_joint': -0.1, 'RR_hip_joint': -0.1,
-        'FL_thigh_joint': 0.8, 'RL_thigh_joint': 0.8, 'FR_thigh_joint': 0.8, 'RR_thigh_joint': 0.8,
+        'FL_thigh_joint': 0.8, 'RL_thigh_joint': 1.0, 'FR_thigh_joint': 0.8, 'RR_thigh_joint': 1.0,
         'FL_calf_joint': -1.5, 'RL_calf_joint': -1.5, 'FR_calf_joint': -1.5, 'RR_calf_joint': -1.5,
     }
 
