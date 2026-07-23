@@ -121,6 +121,14 @@ class Runner:
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
+            # -------------------------------------------------------------
+            # [적응형 커리큘럼] Iteration 진행에 따라 목표 공 속도, 마찰력, 질량, 스폰 범위 순차적 상향
+            # -------------------------------------------------------------
+            if hasattr(self.env, "update_curriculum"):
+                self.env.update_curriculum(it)
+            elif hasattr(getattr(self.env, "env", None), "update_curriculum"):
+                self.env.env.update_curriculum(it)
+
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
