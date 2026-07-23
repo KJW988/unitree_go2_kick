@@ -50,3 +50,7 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - [x] 제자리 회전(`ang_vel_z`) 억제 보상 추가
 - [x] 공이 로봇 몸통 밑에 스폰되는 위치 노이즈 이탈 수정 (`init_pos_range = [0.15, 0.10, 0.0]`)
 - [x] `dof_pos` 초기화 클램프 범위 `(0.8, 1.2)` 유지 검증
+- [x] **공 향해 몸을 던지는 다이빙 편법 해결**:
+  - `_reward_kick_contact`에서 지지다리가 2개 이상일 때만 보상을 주는 **하드 게이트(Hard Gate)** 도입 (`0.5 + 0.5 * gate` → `gate`)
+  - 몸통 높이(Base Height) 0.25m 이상 하드 게이트 조건 추가 (몸을 낮추고 미끄러지는 편법 원천 차단)
+  - `dof_pos` 기본자세 이탈 페널티를 -0.05에서 -0.01로 5배 완화하여, 로봇이 킥을 위해 앞다리를 자유롭게 들어 올리는 동작이 억제되지 않도록 조치
