@@ -25,7 +25,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     # Su et al. 2025 (CoRL, Walk/Dribble/Kick 공용 정책)이 실제로 쓴 값: Kp=35, Kd=0.5.
     # DribbleBot/unitree_rl_gym 기본값(Kp=20)보다 높습니다 - 타격 파워 확보 목적으로 보입니다.
     _.stiffness = {'joint': 35.}
-    _.damping = {'joint': 0.5}
+    _.damping = {'joint': 1.0}        # 감쇠 계수 Kd를 0.5에서 1.0으로 상향 (접지 시 관절 꿀렁임/휘청거림 임계 감쇠로 완전 제거)
     _.action_scale = 0.25
     _.hip_scale_reduction = 0.5
     _.decimation = 4
@@ -83,7 +83,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.lin_vel_z = -2.0               # 상하 요동 억제
     _.ang_vel_xy = -0.5              # 롤/피치 흔들림 억제 상향
     _.ang_vel_z = -0.1               # 무의미한 제자리 팽이 회전 억제
-    _.feet_slip = -0.08              # 지지 발 바닥 미끄러짐 억제
+    _.feet_slip = -0.25              # 지지 발 바닥 미끄러짐/휘청거림 억제 상향
     _.action_smoothness_2 = -0.002   # 액션 떨림/갑작스러운 튐 부드럽게 억제
     _.feet_air_time = 0.0
     _.still_standing = 3.0           # 첫 1.5초 착지 구간 미동도 없는 수평 정지 강력 보상 (잔발 딛기 완전 제거)
