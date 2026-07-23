@@ -26,7 +26,18 @@ class KickRewards(SoccerRewards):
         rew_yaw = super()._reward_dribbling_robot_ball_yaw()
         return rew_yaw * self._settled_gate()
 
-    # ---- 누락되었던 보상/페널티 함수 추가 (base_height, lin_vel_z, ang_vel_xy) ----
+    # ---- 누락되었던 보상/페널티 함수 추가 (base_height, lin_vel_z, ang_vel_xy, dof_vel, still_standing) ----
+    def _reward_still_standing(self):
+        # 스폰 후 첫 1.5초(75스텝) 착지 구간 동안 잔발 딛기 없이 기본 자세로 미동도 없이 정지해 있으면 +3.0점 만점 부여
+        unsettled_gate = 1.0 - self._settled_gate()
+        dof_pos_err = torch.sum(torch.square(self.env.dof_pos - self.env.default_dof_pos), dim=1)
+        dof_vel_err = torch.sum(torch.square(self.env.dof_vel), dim=1)
+        return torch.exp(-0.5 * dof_pos_err) * torch.exp(-0.01 * dof_vel_err) * unsettled_gate
+
+    def _reward_dof_vel(self):
+        # 관절 미세 흔들림 / 제자리 잔발 딛기 감점
+        return torch.sum(torch.square(self.env.dof_vel), dim=1)
+
     def _reward_base_height(self):
         # 몸통 높이가 목표 높이(base_height_target = 0.38m)에서 이탈할 때 페널티 부여
         base_height = self.env.root_states[self.env.robot_actor_idxs, 2]

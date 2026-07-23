@@ -77,7 +77,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.terminal_body_ori = 0.50       # 롤/피치 기울기가 45도 이상 넘어지면 즉시 실패 에피소드 리셋
 
     _ = Cnfg.reward_scales
-    _.base_height = -2.0             # 고개 쳐박기/몸통 쳐짐 방지 (목표 높이 0.34m 유지)
+    _.base_height = -2.0             # 고개 쳐박기/몸통 쳐짐 방지 (목표 높이 0.38m 유지)
     _.pitch_forward_penalty = -5.0   # 상체 전방 숙임/꼬꾸라짐 억제 (무게중심 뒤쪽 유지)
     _.stance_legs_support = 3.0        # 킥 다리를 제외한 3개 다리(반대쪽 앞다리+뒷다리2개) 단단한 지지 보상 (허우적거림 방지)
     _.lin_vel_z = -2.0               # 상하 요동 억제
@@ -86,7 +86,8 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.feet_slip = -0.08              # 지지 발 바닥 미끄러짐 억제
     _.action_smoothness_2 = -0.002   # 액션 떨림/갑작스러운 튐 부드럽게 억제
     _.feet_air_time = 0.0
-    # 정규화/안정성 항 - go1_config.py 기본값 그대로
+    _.still_standing = 3.0           # 첫 1.5초 착지 구간 미동도 없는 수평 정지 강력 보상 (잔발 딛기 완전 제거)
+    _.dof_vel = -0.001               # 관절 각속도 감점 (제자리 흔들림/잔발 딛기 감점)
     _.torques = -0.0001
     _.action_rate = -0.05            # 액션 변화율 감점 상향 (다리 4개 허우적거림 억제)
     _.dof_acc = -5.0e-7              # 관절 급격한 가속도/발작 억제 (모터열화 방지 및 부드러운 스윙)
