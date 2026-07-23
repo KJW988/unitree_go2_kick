@@ -78,3 +78,12 @@ Record of all issues encountered and resolved during the Go2 Kick RL debugging t
   1. Updated `_reward_kick_contact()` to use strict hard gating (`support_gate * height_gate`), requiring ≥2 support legs with Z-force > 1.0N and base height > 0.25m.
   2. Reduced `dof_pos` penalty to `-0.01` so leg lifting for kicks is not penalized.
 - **Status**: Resolved.
+
+---
+
+## Issue 8: Knee (Calf/Thigh) Ground Contact Exploit
+
+- **Problem Description**: Robot crouched low and rested its knees/calves (`thigh` / `calf`) on the ground to maintain stability instead of standing upright on its foot pads (`foot`).
+- **Root Cause**: `terminate_after_contacts_on` only included `["base", "Head_upper", "Head_lower"]`. Contact on `thigh` and `calf` only incurred mild collision penalties without triggering episode resets, making knee-resting an easy stability shortcut.
+- **Resolution**: Updated `terminate_after_contacts_on = ["base", "thigh", "calf", "Head_upper", "Head_lower"]` in `go2_kick_config.py`. Any ground contact on knees/calves now immediately terminates and resets the episode, forcing the policy to stand strictly on its foot pads (`foot`).
+- **Status**: Resolved.
