@@ -14,9 +14,9 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
 
     _ = Cnfg.init_state
     _.pos = [0.0, 0.0, 0.42]  # unitree_rl_gym go2_config.py 실측값 (Go1: 0.34m)
-    _.default_joint_angles = {  # Go1과 동일한 규약 (unitree_rl_gym에서 확인)
+    _.default_joint_angles = {  # Go2 대칭 서기 관절 각도 (뒷다리 고꾸라짐 방지)
         'FL_hip_joint': 0.1, 'RL_hip_joint': 0.1, 'FR_hip_joint': -0.1, 'RR_hip_joint': -0.1,
-        'FL_thigh_joint': 0.8, 'RL_thigh_joint': 1.0, 'FR_thigh_joint': 0.8, 'RR_thigh_joint': 1.0,
+        'FL_thigh_joint': 0.8, 'RL_thigh_joint': 0.8, 'FR_thigh_joint': 0.8, 'RR_thigh_joint': 0.8,
         'FL_calf_joint': -1.5, 'RL_calf_joint': -1.5, 'FR_calf_joint': -1.5, 'RR_calf_joint': -1.5,
     }
 
@@ -68,7 +68,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.kick_quality_threshold = 0.6   # r_kick(0~1)이 이 값 넘으면 Pursue&Strike -> Hold 전환 (초반 학습 가속)
     _.kick_vel_target = 2.0          # m/s. 초반 크레딧 할당 신호 포착용 목표 공 속도
     _.soft_dof_pos_limit = 0.9
-    _.base_height_target = 0.34
+    _.base_height_target = 0.38      # Go2 실측 기립 높이 (Go1: 0.34m) - 웅크리기 및 고꾸라짐 방지
     
     # 주저앉음/넘어짐 상태 편법 수백 스텝 유지 방지 (Check Termination 안전장치)
     _.use_terminal_body_height = True
