@@ -86,11 +86,13 @@ class KickRewards(SoccerRewards):
     # Su2025: "Once r_kick exceeds the threshold... the robot is rewarded for
     # stabilizing its posture in place." 를 그대로 구현.
     def _reward_kick_hold(self):
-        threshold = getattr(self.env.cfg.rewards, "kick_quality_threshold", 0.8)
+        threshold = getattr(self.env.cfg.rewards, "kick_quality_threshold", 0.6)
         gate = (self._kick_quality() >= threshold).float()
         lin_vel_error = torch.sum(torch.square(self.env.base_lin_vel[:, :2]), dim=1)
+        # 킥 임팩트 후 뻗은 다리를 접어 원래 기본 서 있는 자세(default_dof_pos)로 회수(Recovery)하도록 유도
+        dof_pos_error = torch.sum(torch.square(self.env.dof_pos - self.env.default_dof_pos), dim=1)
         sigma = getattr(self.env.cfg.rewards, "tracking_sigma", 0.25)
-        return torch.exp(-lin_vel_error / sigma) * gate
+        return torch.exp(-lin_vel_error / sigma) * torch.exp(-0.2 * dof_pos_error) * gate
 
     # ---- v1 스텁: 목표 지점 정밀 슈팅용 (지금은 비활성, kick_target_pos 관측 추가 후 사용) ----
     # RoboNaldo 방식(탄도 외삽으로 골라인 통과 지점을 매 스텝 예측해 조기에 보상 신호를 주는 것)을

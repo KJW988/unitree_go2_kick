@@ -37,14 +37,11 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
   - `wandb.init(name="go2-kick-v0", reinit=True)` 설정으로 이전 삭제된 run ID와의 409 Conflict 오류 완벽 해결.
 - **Validation Status**: Verified configuration update for 2048 envs.
 
-### 5. 선제 구축 파이프라인 모듈 (v1 ~ 실기 배포용)
-- **`scripts/play_kick.py`**:
-  - Headless 서버 환경 지원 오프라인 비디오 렌더링 (`kick_demo.mp4`) 및 CLI 커맨드 주입 평가 스크립트 구축.
 - **`dribblebot/envs/go2/go2_kick_config.py` & `dribblebot/rewards/kick_rewards.py`**:
-  - 사용자 지적 반영: 킥 임팩트 직후 자세 안정화 2단계 보상인 `_.kick_hold = 2.0` 원상 복원 완료.
-  - 공 접근 보행 시 어설픈 기어가기 모션을 방지하는 정갈한 4족 교차 보행(Trot Gait) 형성 보상 (`tracking_contacts_shaped_force = 1.0`, `tracking_contacts_shaped_vel = 1.0`) 활성화 반영.
-  - `kick_vel_target`을 1.5m/s로 조율하여 초반 탐색(Exploration) 시 킥 임팩트 보상 신호 수집 속도 3배 가속.
-- **Validation Status**: Cleanly compiled and pushed to GitHub main branch.
+  - 사용자 현장 원인 파악 (킥 임팩트 후 다리를 뻗은 채 주저앉아 멈추는 편법 현상 해결):
+    1) `_reward_kick_hold` 보상 수식에 `dof_pos_error` (기본 관절 서 있는 자세 오차) 회수 항(`torch.exp(-0.2 * dof_pos_error)`)을 결합하여, 킥 직후 다리를 당겨 원래 4족 기립 자세로 완벽히 복귀(Leg Retraction & Recovery)하도록 강제.
+    2) `reward_scales`에 `dof_pos = -0.05` 항을 추가하여 평소 및 킥 후에도 다리를 쭉 뻗은 채 바닥에 주저앉는 편법(Local Minima)을 페널티로 원천 차단.
+- **Validation Status**: Cleanly compiled and verified.
 
 ---
 

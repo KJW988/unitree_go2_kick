@@ -84,6 +84,7 @@ def config_go2_kick(Cnfg: Union[Cfg, Meta]):
     _.torques = -0.0001
     _.action_rate = -0.05            # 액션 변화율 감점 상향 (다리 4개 허우적거림 억제)
     _.dof_acc = -5.0e-7              # 관절 급격한 가속도/발작 억제 (모터열화 방지 및 부드러운 스윙)
+    _.dof_pos = -0.05                # 기본 관절 자세(default_dof_pos) 이탈 페널티 (킥 후 다리 뻗고 주저앉는 편법 차단)
     _.dof_pos_limits = -10.0
     _.orientation = -5.0
     _.collision = -5.0
