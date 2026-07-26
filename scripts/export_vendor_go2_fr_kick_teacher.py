@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -52,7 +53,10 @@ def source_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def offsets_at(elapsed_s: float, *, fr_forward_extension_m: float = 0.0) -> np.ndarray:
+def offsets_at(
+    elapsed_s: float, *, fr_forward_extension_m: float = 0.0,
+    _control_point_extension_m: float | None = None,
+) -> np.ndarray:
     """teacher의 기본 환경변수 preset과 같은 순수 NumPy 관절 offset을 반환한다.
 
     ``fr_forward_extension_m``는 실물 harness tuning 전용으로, kick 종점의
@@ -69,11 +73,14 @@ def offsets_at(elapsed_s: float, *, fr_forward_extension_m: float = 0.0) -> np.n
     thigh_i, calf_i = index["FR_thigh_joint"], index["FR_calf_joint"]
     toe = NOMINAL.copy()
     arrive_end = lift_end - LIFT_HOLD_S
-    # ``toe = NOMINAL + SWING_FRACTION * (point - NOMINAL)`` 이므로 Bezier
-    # control point에는 역으로 나눈 값을 적용해야 실제 종점이 정확히 extension만큼
-    # 전방으로 이동한다. simulator teacher의 기본 control point는 건드리지 않는다.
+    # Planar IK의 calf clamp까지 포함해 모델상 실제 toe x 종점이 요청값이 되도록
+    # control point 전진량을 역산한다. simulator teacher의 기본 control point는 건드리지 않는다.
     bezier = BEZIER.copy()
-    extension_in_control_point = fr_forward_extension_m / SWING_FRACTION
+    extension_in_control_point = (
+        _control_point_extension_m
+        if _control_point_extension_m is not None
+        else _control_extension_for_requested_toe_x(fr_forward_extension_m)
+    )
     bezier[2, 0] += 0.50 * extension_in_control_point
     bezier[3, 0] += 0.85 * extension_in_control_point
     bezier[4, 0] += extension_in_control_point
@@ -106,13 +113,49 @@ def offsets_at(elapsed_s: float, *, fr_forward_extension_m: float = 0.0) -> np.n
     return result
 
 
+def _fr_toe_x_from_offsets(offsets: np.ndarray) -> float:
+    """exporter와 동일한 planar FK로 FR toe x를 계산한다 (실물 calibration 대체 아님)."""
+    q1, q2 = float(DEFAULT_Q[4] + offsets[4]), float(DEFAULT_Q[5] + offsets[5])
+    upper, tip_x, tip_z = 0.213, 0.020, -0.148
+    return -upper * math.sin(q1) + tip_x * math.cos(q1 + q2) + tip_z * math.sin(q1 + q2)
+
+
+@lru_cache(maxsize=None)
+def _control_extension_for_requested_toe_x(requested_extension_m: float) -> float:
+    """calf clamp 뒤에도 모델상 toe x 추가 전진량을 requested 값으로 맞춘다."""
+    if requested_extension_m == 0.0:
+        return 0.0
+    endpoint_s = PHASES[2]
+    base_x = _fr_toe_x_from_offsets(
+        offsets_at(endpoint_s, _control_point_extension_m=0.0)
+    )
+    target_x = base_x + requested_extension_m
+    lower = 0.0
+    upper = max(0.01, requested_extension_m / SWING_FRACTION)
+    while _fr_toe_x_from_offsets(
+        offsets_at(endpoint_s, _control_point_extension_m=upper)
+    ) < target_x:
+        upper *= 2.0
+        if upper > 0.5:
+            raise ValueError("requested FR forward extension is outside planar IK reach")
+    for _ in range(40):
+        middle = 0.5 * (lower + upper)
+        if _fr_toe_x_from_offsets(
+            offsets_at(endpoint_s, _control_point_extension_m=middle)
+        ) < target_x:
+            lower = middle
+        else:
+            upper = middle
+    return 0.5 * (lower + upper)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="출력 .npz; 같은 위치에 .csv 생성")
     parser.add_argument("--duration-s", type=float, default=6.0)
     parser.add_argument(
         "--fr-forward-extension-m", type=float, default=0.0,
-        help="실물 harness 전용 FR toe 종점 추가 전방거리 [m], 0..0.08 (기본 0)",
+        help="실물 harness 전용 FR toe 종점 추가 전방거리 [m], 0..0.10 (기본 0)",
     )
     args = parser.parse_args()
     if args.output.suffix != ".npz":
@@ -121,12 +164,13 @@ def main() -> None:
         parser.error("output directory does not exist: {}".format(args.output.parent))
     if args.duration_s < PHASES[-1] or not math.isclose(args.duration_s * SAMPLE_HZ, round(args.duration_s * SAMPLE_HZ), abs_tol=1e-9):
         parser.error("--duration-s must cover 4.90 s and be a 1/50 s multiple")
-    if not 0.0 <= args.fr_forward_extension_m <= 0.08:
-        parser.error("--fr-forward-extension-m must be in [0.0, 0.08]")
+    if not 0.0 <= args.fr_forward_extension_m <= 0.10:
+        parser.error("--fr-forward-extension-m must be in [0.0, 0.10]")
     sample_count = int(round(args.duration_s * SAMPLE_HZ))
     times = np.arange(sample_count, dtype=np.float64) / SAMPLE_HZ
+    control_extension_m = _control_extension_for_requested_toe_x(args.fr_forward_extension_m)
     offsets = np.vstack([
-        offsets_at(time_s, fr_forward_extension_m=args.fr_forward_extension_m)
+        offsets_at(time_s, _control_point_extension_m=control_extension_m)
         for time_s in times
     ])
     canonical = DEFAULT_Q[None, :] + offsets
@@ -141,6 +185,7 @@ def main() -> None:
         "canonical_dof_names": list(CANONICAL_DOF_NAMES), "canonical_to_sdk_motor_index": list(CANONICAL_TO_SDK_MOTOR_INDEX),
         "sim_default_dof_pos_rad": DEFAULT_Q.tolist(), "phases_s": list(PHASES),
         "fr_forward_extension_m": args.fr_forward_extension_m,
+        "fr_forward_extension_control_point_m": control_extension_m,
         "physical_tuning": "harness_only; default 0 preserves the frozen teacher",
         "units": {"position": "rad", "planned_finite_difference_velocity": "rad/s"},
         "physical_status": "unattested_do_not_send_to_robot",
