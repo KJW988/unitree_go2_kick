@@ -169,15 +169,16 @@ MotionSwitcher가 반환한 owner name은 firmware별로 `SelectMode()` 가능�
 python3 hardware/go2_edu_stationary_kick/query_motion_switcher.py --interface eth0
 ```
 
-Go2의 공식 MotionSwitcher 예제는 controller mode alias로 `normal`을 사용한다. persistent
-kick session의 controller 우선권을 구현하기 전에는 아래 probe로 해당 EDU firmware에서
-`normal` reacquire가 성공하는지 확인한다. 이 probe는 LowCmd와 Sport motion 명령을 만들지
-않지만 mode selection은 수행하므로 robot이 정상 standing이고 clear zone인 상태에서만 쓴다.
+Go2의 공식 MotionSwitcher 예제는 mode alias로 `normal`, `ai`, `advanced`를 사용한다.
+persistent kick session의 controller 우선권을 구현하기 전에는 아래 probe로 해당 EDU
+firmware에서 alias 하나의 reacquire가 성공하는지 확인한다. 이 probe는 LowCmd와 Sport
+motion 명령을 만들지 않지만 mode selection은 수행하므로 robot이 정상 standing이고 clear
+zone인 상태에서만 쓴다. 자동 후보 순회는 하지 않는다.
 
 ```bash
 python3 hardware/go2_edu_stationary_kick/probe_motion_switcher_alias.py \
-  --interface eth0 --execute \
-  --operator-confirm SELECT_NORMAL_MODE_READY
+  --interface eth0 --mode ai --execute \
+  --operator-confirm SELECT_MODE_READY
 ```
 
 `select_status=0`, `after.name`이 비어 있지 않으면 controller-mode reacquire 후보가
