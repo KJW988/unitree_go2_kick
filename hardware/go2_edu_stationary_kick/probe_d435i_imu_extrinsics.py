@@ -71,8 +71,11 @@ def main() -> int:
     np, rs = _require_runtime()
     pipeline, config = rs.pipeline(), rs.config()
     config.enable_stream(rs.stream.color, args.width, args.height, rs.format.bgr8, args.fps)
-    config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, 63)
-    config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, 200)
+    # D435i firmware별로 가능한 motion rate 조합이 다르므로 특정 Hz를 강제하지
+    # 않는다. config가 device의 기본 accel/gyro profile을 선택하게 해야 RGB와
+    # 동시에 안정적으로 열 수 있다.
+    config.enable_stream(rs.stream.accel)
+    config.enable_stream(rs.stream.gyro)
     profile = None
     try:
         profile = pipeline.start(config)
@@ -121,6 +124,8 @@ def main() -> int:
                 "firmware": device.get_info(rs.camera_info.firmware_version),
             },
             "color_stream": {"width": args.width, "height": args.height, "fps": args.fps},
+            "accelerometer_stream_fps": int(accel_profile.fps()),
+            "gyroscope_stream_fps": int(gyro_profile.fps()),
             "duration_s": args.duration_s,
             "accel_to_color": _extrinsics_dict(accel_to_color),
             "gyro_to_color": _extrinsics_dict(gyro_to_color),
