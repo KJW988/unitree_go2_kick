@@ -67,6 +67,16 @@ yaw 또는 camera 위치 `x/y/z`를 얻을 수 없다.
 python hardware/go2_edu_stationary_kick/probe_d435i_imu_extrinsics.py --duration-s 10
 ```
 
+벽의 Tag 중심 지면투영점을 가상 골문으로 쓸 때도, 첫 실제 검증은 camera-frame pose만
+기록한다. 아래 probe는 `tag36h11`의 모든 ID를 자동 검출하고, 검은 외곽 정사각형 실제
+변 길이와 Tag 중심 높이를 metadata에 보존한다. `camera_to_base_extrinsic`과
+`ground_projection`은 base 정합 전까지 의도적으로 `null`이다.
+
+```bash
+python hardware/go2_edu_stationary_kick/probe_d435i_apriltag.py \
+  --tag-size-m 0.152 --tag-center-height-m 0.300 --duration-s 10
+```
+
 ## artifact와 attestation
 
 실제 PC에 이 저장소를 복사한 뒤 artifact를 생성한다.

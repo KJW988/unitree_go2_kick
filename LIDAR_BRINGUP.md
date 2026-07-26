@@ -16,8 +16,9 @@ Go2 EDU의 DDS를 개인 Foxy/CycloneDDS workspace에서 `eth0`으로 수신했�
 - `/utlidar/cloud`, `/utlidar/cloud_base`, `/utlidar/cloud_deskewed`를 발견했다.
 - `/utlidar/cloud_base`는 `base_link` frame이고 약 15.4 Hz다. 이 토픽만이
   base-frame ball 위치 후보의 기본 입력이다.
-- `/utlidar/cloud_deskewed`는 `odom` frame이므로 base-frame detector 입력이
-  아니다. bag cross-check용으로만 기록한다.
+- `/utlidar/cloud_deskewed`는 `odom` frame이다. sparse `cloud_base`가 검증에
+  실패했으므로, 정지 bag에서만 `/utlidar/robot_odom` pose로 명시적으로 `base_link`로
+  역변환한 dense 검증 경로를 사용한다. 변환 오차·false positive 검증 전에는 runtime 입력이 아니다.
 - ball 39.155 s bag에서 `cloud/cloud_base/cloud_deskewed`는 각각 603개,
   empty 52.264 s bag에서는 각각 805/805/804개였다.
 
@@ -116,3 +117,7 @@ python3 run.py
 ## 실공 bag 재설계 상태
 
 단일-frame sphere-fit은 완전한 ball/empty bag에서 ball recall 0/603, empty false positive 0/805로 실패했다. 정지 로봇에서는 65 ms 단위의 희소 반사점을 12 frame non-overlapping base-frame window로 누적하고, self-leg 영역을 제외한 1 m 전방 lane에서만 sphere-fit하는 validation profile을 사용한다. 이는 다음 bag 결과로 recall·false positive·위치 오차를 다시 판정하기 위한 실험용 설정이며, runtime ball search나 kick interface에는 아직 연결하지 않는다.
+
+## Dense deskewed bag 검증
+
+`run.py`의 다음 단계는 `/utlidar/cloud_deskewed`와 `/utlidar/robot_odom`만 재생한다. cloud가 `odom` frame이므로 최신 timestamp의 odometry pose로 `base_link`로 역변환하고, pose 차이가 50 ms를 넘는 frame은 버린다. 이는 저장된 정지 bag의 실험이며 실제 DDS·제어 경로와 연결되지 않는다. 결과 파일은 `ball_1m_deskewed_analysis.json`과 `empty_deskewed_analysis.json`이다.

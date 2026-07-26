@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from dribblebot.perception.odom_transform import odom_points_to_base
 from dribblebot.perception.temporal_lidar_ball_detector import StaticTemporalBallDetector
 from dribblebot.perception.validated_lidar_ball_detector import (
     LidarBallDetectorConfig,
@@ -66,6 +67,13 @@ class ValidatedLidarBallDetectorTest(unittest.TestCase):
         ))
         points = np.vstack((_ground(rng), box))
         self.assertIsNone(self.detector.detect(points, frame_id="base_link"))
+
+    def test_odom_cloud_inverse_transform_returns_base_points(self):
+        base = np.array(((1.0, 0.0, -0.3), (0.0, 1.0, -0.3)))
+        # base->odom: +90 degree yaw and translation (2, 3, 0).
+        odom = np.array(((2.0, 4.0, -0.3), (1.0, 3.0, -0.3)))
+        recovered = odom_points_to_base(odom, (2.0, 3.0, 0.0), (0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)))
+        np.testing.assert_allclose(recovered, base, atol=1e-12)
 
     def test_non_base_frame_requires_measured_transform(self):
         with self.assertRaisesRegex(ValueError, "no measured sensor_to_base"):

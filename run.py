@@ -21,13 +21,14 @@ DEFAULT_SETUP = (
     Path.home() / "Desktop/Jiwon/go2_lidar_ros2_ws/unitree_ros2/"
     "cyclonedds_ws/install/setup.bash"
 )
-TOPIC = "/utlidar/cloud_base"
+CLOUD_TOPIC = "/utlidar/cloud_deskewed"
+ODOM_TOPIC = "/utlidar/robot_odom"
 # Jetson CPU detector가 15.4 Hz playback을 놓치지 않도록 저장 bag만 감속한다.
 PLAYBACK_RATE = 0.25
 PLAYBACK_TIMEOUT_S = 300.0
 BAGS: Dict[str, Tuple[str, int, str]] = {
-    "ball": ("go2_static_ball_1m_20260726_215950", 603, "ball_1m_analysis.json"),
-    "empty": ("go2_static_empty_20260726_220040", 805, "empty_analysis.json"),
+    "ball": ("go2_static_ball_1m_20260726_215950", 603, "ball_1m_deskewed_analysis.json"),
+    "empty": ("go2_static_empty_20260726_220040", 804, "empty_deskewed_analysis.json"),
 }
 
 
@@ -68,7 +69,7 @@ def _enter_isolated_ros_environment() -> None:
 
 def _run_one_bag(label: str, bag_root: Path) -> Dict[str, object]:
     import rclpy
-    from scripts.analyze_lidar_ball_topic_ros2 import TopicAnalyzer
+    from scripts.analyze_lidar_deskewed_topic_ros2 import DeskewedTopicAnalyzer
 
     bag_name, expected_frames, output_name = BAGS[label]
     bag_path = bag_root / bag_name
@@ -76,14 +77,14 @@ def _run_one_bag(label: str, bag_root: Path) -> Dict[str, object]:
         raise FileNotFoundError(f"{label} bag을 찾지 못했습니다: {bag_path}")
 
     node = rclpy.create_node(f"validated_lidar_offline_{label}")
-    analyzer = TopicAnalyzer(node, TOPIC)
+    analyzer = DeskewedTopicAnalyzer(node, CLOUD_TOPIC, ODOM_TOPIC)
     playback = None
     try:
         # DDS discovery를 끝낸 뒤 저장 bag만 localhost에 재생한다.
         time.sleep(1.5)
         playback = subprocess.Popen(
             [
-                "ros2", "bag", "play", str(bag_path), "--topics", TOPIC,
+                "ros2", "bag", "play", str(bag_path), "--topics", CLOUD_TOPIC, ODOM_TOPIC,
                 "--rate", str(PLAYBACK_RATE),
             ],
             env=os.environ.copy(),
@@ -101,7 +102,7 @@ def _run_one_bag(label: str, bag_root: Path) -> Dict[str, object]:
         quiet_deadline = time.monotonic() + 1.0
         while time.monotonic() < quiet_deadline:
             rclpy.spin_once(node, timeout_sec=0.10)
-        result = analyzer.result(TOPIC)
+        result = analyzer.result(CLOUD_TOPIC)
         result.update({
             "bag": str(bag_path),
             "expected_frames": expected_frames,
