@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "robot_model": "Go2 EDU",
+  "firmware_version": "FILL_AFTER_ROBOT_PC_CHECK",
+  "verified_by": "FILL_WITH_OPERATOR_NAME",
+  "verified_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "teacher_dof_names": [
+    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
+    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint"
+  ],
+  "canonical_to_sdk_motor_index": [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8],
+  "position_scale": ["MEASURED_12_VALUES"],
+  "position_offset_rad": ["MEASURED_12_VALUES"],
+  "position_limits_rad": [["MIN", "MAX"]],
+  "torque_limits_nm": ["FIRMWARE_APPROVED_12_VALUES"],
+  "validated_command_speed_limit_rad_s": ["HOIST_VALIDATED_CANONICAL_12_VALUES"],
+  "lowcmd_kp": ["HARDWARE_REVIEWED_CANONICAL_12_VALUES"],
+  "lowcmd_kd": ["HARDWARE_REVIEWED_CANONICAL_12_VALUES"]
+}
