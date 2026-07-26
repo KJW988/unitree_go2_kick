@@ -37,6 +37,8 @@ CONTROL_HZ = 200.0
 BASELINE_CAPTURE_S = 4.0
 BASELINE_MAX_SPAN_RAD = 0.006
 CONFIRMATION = "HARNESS_ESTOP_READY"
+# export_vendor_go2_fr_kick_teacher.py의 LOAD_END. 이 뒤부터만 swing amplitude를 조정한다.
+FR_SWING_START_S = 2.80
 
 
 class StateBuffer:
@@ -224,6 +226,7 @@ def main() -> int:
     parser.add_argument("--hold-only-s", type=float, default=3.0, help="--hold-only 유지 시간")
     parser.add_argument("--hold-after-s", type=float, default=0.0, help="preset/hold 뒤 baseline을 추가 유지할 시간; 0이면 즉시 종료")
     parser.add_argument("--preset-time-scale", type=float, default=1.0, help="1보다 작으면 preset을 더 빠르게 재생")
+    parser.add_argument("--fr-swing-scale", type=float, default=1.0, help="kick phase FR thigh/calf delta scale; 1.15는 15% extension")
     parser.add_argument("--handoff-blend-s", type=float, default=0.4, help="release 직후 actual q에서 baseline으로 연결하는 minimum-jerk 시간")
     parser.add_argument("--handback-mode", default="", help="검증 후에만 지정하는 controller MotionSwitcher mode")
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
@@ -238,6 +241,8 @@ def main() -> int:
         parser.error("--preset-time-scale must be between 0.2 and 2.0")
     if not math.isfinite(args.handoff_blend_s) or args.handoff_blend_s <= 0.0:
         parser.error("--handoff-blend-s must be positive and finite")
+    if not math.isfinite(args.fr_swing_scale) or not 0.8 <= args.fr_swing_scale <= 1.3:
+        parser.error("--fr-swing-scale must be between 0.8 and 1.3")
     if args.release_motion_owner and not args.execute:
         parser.error("--release-motion-owner requires --execute")
 
@@ -254,6 +259,10 @@ def main() -> int:
     baseline, span = _capture_baseline(buffer, BASELINE_CAPTURE_S)
     # q_sdk is raw device order, so adding the delta preserves the frozen FR preset exactly.
     preset_delta = teacher["q_sdk_motor_order_rad"] - teacher["q_sdk_motor_order_rad"][0]
+    # SDK raw order에서 FR은 0/1/2이고, sagittal reach는 thigh/calf(1/2)가 담당한다.
+    # support preload와 baseline은 보존하고 swing phase만 bounded physical tuning한다.
+    swing_mask = teacher["time_s"] >= FR_SWING_START_S
+    preset_delta[swing_mask, 1:3] *= args.fr_swing_scale
     target = baseline[None, :] + preset_delta
     summary = {
         "schema_version": 1,
@@ -272,6 +281,7 @@ def main() -> int:
         "hold_only_s": args.hold_only_s,
         "hold_after_s": args.hold_after_s,
         "preset_time_scale": args.preset_time_scale,
+        "fr_swing_scale": args.fr_swing_scale,
         "handoff_blend_s": args.handoff_blend_s,
         "handback_mode": args.handback_mode,
         "execute": args.execute,
