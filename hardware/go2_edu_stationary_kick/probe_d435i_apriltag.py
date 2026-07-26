@@ -115,6 +115,7 @@ def main() -> int:
             pipeline.wait_for_frames(timeout_ms=2000)
 
         detections: dict[int, dict[str, Any]] = {}
+        pose_samples: dict[int, dict[str, list[list[float]]]] = {}
         frame_count, rejected_small_count = 0, 0
         largest_annotated_area_px = 0.0
         best_image, color_intrinsics, last_image = None, None, None
@@ -171,7 +172,10 @@ def main() -> int:
                         "best_optical_range_m": None,
                     }
                     detections[marker_id] = current
+                    pose_samples[marker_id] = {"translation": [], "rotation_rvec": []}
                 current["detection_frame_count"] += 1
+                pose_samples[marker_id]["translation"].append(camera_translation)
+                pose_samples[marker_id]["rotation_rvec"].append(camera_rotation_rvec)
                 if area >= current["largest_area_px"]:
                     current["largest_area_px"] = float(area)
                     current["best_camera_translation_m"] = camera_translation
@@ -213,7 +217,27 @@ def main() -> int:
             "color_intrinsics": None if color_intrinsics is None else _intrinsics_dict(color_intrinsics),
             "frame_count": frame_count,
             "rejected_small_count": rejected_small_count,
-            "detected_tags": [detections[tag_id] for tag_id in sorted(detections)],
+            "detected_tags": [
+                {
+                    **detections[tag_id],
+                    "median_camera_translation_m": [
+                        float(value) for value in np.median(
+                            np.asarray(pose_samples[tag_id]["translation"], dtype=np.float64), axis=0
+                        )
+                    ],
+                    "translation_std_m": [
+                        float(value) for value in np.std(
+                            np.asarray(pose_samples[tag_id]["translation"], dtype=np.float64), axis=0
+                        )
+                    ],
+                    "median_camera_rotation_rvec": [
+                        float(value) for value in np.median(
+                            np.asarray(pose_samples[tag_id]["rotation_rvec"], dtype=np.float64), axis=0
+                        )
+                    ],
+                }
+                for tag_id in sorted(detections)
+            ],
             "best_annotated_image": image_name,
             "last_rgb_image": last_image_name,
             "camera_to_base_extrinsic": None,

@@ -79,6 +79,22 @@ python hardware/go2_edu_stationary_kick/probe_d435i_apriltag.py \
   --tag-size-m 0.152 --tag-center-height-m 0.300 --duration-s 10
 ```
 
+D435i live IMU stream을 사용할 수 없는 설치에서는 고정 벽 Tag와 바닥의 표시된
+calibration spot을 mount integrity 기준기로 쓴다. 이 방법은 IMU와 달리 camera의
+translation과 yaw 변화도 감지한다. baseline을 만들 때와 검증할 때 모두 robot이 같은
+floor mark에 같은 정면 방향으로 standing 해야 하며, PASS는 그 조건 아래의 mount 정상만
+뜻한다.
+
+```bash
+python hardware/go2_edu_stationary_kick/create_d435i_tag_mount_baseline.py \
+  --probe hardware_measurements/d435i_apriltag_probe_TIMESTAMP/metadata.json \
+  --tag-id 11 --operator-confirm CALIBRATION_SPOT_MARKED
+
+python hardware/go2_edu_stationary_kick/verify_d435i_tag_mount.py \
+  --baseline hardware_measurements/d435i_tag_mount_baseline.json \
+  --probe hardware_measurements/d435i_apriltag_probe_TIMESTAMP/metadata.json
+```
+
 ## artifact와 attestation
 
 실제 PC에 이 저장소를 복사한 뒤 artifact를 생성한다.
