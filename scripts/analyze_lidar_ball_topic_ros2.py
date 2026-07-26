@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from dribblebot.perception.lidar_ball_diagnostics import diagnose_lidar_frame
 from dribblebot.perception.pointcloud2 import pointcloud2_to_xyz
 from dribblebot.perception.validated_lidar_ball_detector import (
     LidarBallDetectorConfig,
@@ -43,6 +44,8 @@ class TopicAnalyzer:
         self.point_counts: List[int] = []
         self.frame_ids = set()
         self.detections: List[Dict[str, object]] = []
+        self.diagnostic_samples: List[Dict[str, object]] = []
+        self.point_field_layout: List[Dict[str, object]] = []
         self.errors: List[str] = []
         self.subscription = node.create_subscription(PointCloud2, topic, self._on_cloud, 10)
 
@@ -56,6 +59,17 @@ class TopicAnalyzer:
             self.stamps.append(stamp)
             self.point_counts.append(len(points))
             self.frame_ids.add(message.header.frame_id)
+            if not self.point_field_layout:
+                self.point_field_layout = [{
+                    "name": str(field.name), "offset": int(field.offset),
+                    "datatype": int(field.datatype), "count": int(field.count),
+                } for field in message.fields]
+            frame_index = len(self.stamps)
+            if frame_index == 1 or frame_index % 75 == 0:
+                diagnostic = diagnose_lidar_frame(self.detector, points, message.header.frame_id)
+                diagnostic["frame_index"] = frame_index
+                diagnostic["stamp_s"] = stamp
+                self.diagnostic_samples.append(diagnostic)
             result = self.detector.detect(
                 points, frame_id=message.header.frame_id, stamp_s=stamp,
             )
@@ -83,6 +97,7 @@ class TopicAnalyzer:
         return {
             "topic": topic,
             "frame_ids": sorted(self.frame_ids),
+            "point_field_layout": self.point_field_layout,
             "frames": frames,
             "detections": len(self.detections),
             "detection_rate": float(len(self.detections) / frames) if frames else 0.0,
@@ -94,6 +109,7 @@ class TopicAnalyzer:
             "drop_intervals": drop_intervals,
             "decode_or_frame_errors": self.errors[:20],
             "detection_samples": self.detections[:100],
+            "pipeline_diagnostic_samples": self.diagnostic_samples,
             "note": (
                 "오프라인 후보 통계다. ball/empty 비교와 위치 정확도 검증 전에는 "
                 "kick input으로 사용하지 않는다."

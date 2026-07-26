@@ -110,3 +110,5 @@ python3 run.py
 접근하지 않는다. Jetson CPU에서 모든 frame을 처리하기 위해 재생 속도를 0.25×로 낮추므로 전체 실행에는 약 6분이 걸린다. 결과는 `~/Desktop/Jiwon/lidar_bags/ball_1m_analysis.json` 및
 `empty_analysis.json`에 저장된다. 경로가 다르면 `GO2_LIDAR_SETUP` 또는
 `GO2_LIDAR_BAG_ROOT` 환경변수로만 바꿀 수 있다.
+
+`run.py`가 생성하는 JSON에는 point field와 sampled ROI/ground/cluster/sphere-fit 단계 통계도 포함된다. 실공 미검출 시 이 통계를 사용해 탈락 단계를 재설계하며, 검증 전에는 킥 입력으로 연결하지 않는다.
