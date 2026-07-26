@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """합성 base-frame point cloud로 검증 전용 LiDAR detector를 시험한다."""
 
+import sys
 import unittest
+from pathlib import Path
+
+# 스크립트를 저장소 밖의 Foxy shell에서 직접 실행해도 project package를 찾는다.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 

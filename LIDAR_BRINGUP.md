@@ -37,15 +37,51 @@ bag 검증이 완료된 뒤에만 개인 XML을 `Interfaces/NetworkInterface nam
 1. `scripts/test_validated_lidar_ball_detector.py`를 `go2kick` 환경에서 실행한다.
    합성 지면 + 11 cm 구 + noise/clutter에서 ground removal, clustering, sphere fit,
    base-frame 제약, stale fail-closed를 검증한다.
-2. 정지 ball/empty rosbag 각각에
-   `scripts/analyze_lidar_ball_bag_ros2.py`를 실행한다. 이 script는
-   `/utlidar/cloud_base`만 deserialize하며 control API를 만들지 않는다.
+2. 정지 ball/empty rosbag 각각을 loopback DDS에서 재생하고
+   `scripts/analyze_lidar_ball_topic_ros2.py`로 구독한다. 이 경로는 Foxy에
+   `rosbag2_py` Python binding이 없어도 되며, `/utlidar/cloud_base`만 구독하고
+   control API를 만들지 않는다.
 3. ball bag detection recall, empty bag false positive, radius/residual/range와
    timestamp drop을 비교한다. 실제 kick lane의 p95 XY 오차 2 cm 및 충분한
    연속 high-confidence 관측을 별도로 입증하기 전에는
    `RelativeTargetObservation.ball_base_xy`로 연결하지 않는다.
 
 ## off-line bag 명령
+
+Foxy 설치에 `rosbag2_py`가 없으면, 아래 두 터미널 방식으로 bag을 loopback에서만 재생·분석한다. 두 터미널은 반드시 `ROS_LOCALHOST_ONLY=1`과 `unset CYCLONEDDS_URI`를 적용한다. 따라서 재생기와 분석기만 서로 발견하며 실제 Go2 DDS에는 연결되지 않는다.
+
+두 터미널 공통:
+
+```bash
+env -i HOME="$HOME" USER="$USER" TERM="$TERM" \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  bash --noprofile --norc
+source /opt/ros/foxy/setup.bash
+source "$HOME/Desktop/Jiwon/go2_lidar_ros2_ws/unitree_ros2/cyclonedds_ws/install/setup.bash"
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export ROS_LOCALHOST_ONLY=1
+unset CYCLONEDDS_URI
+cd "$HOME/Desktop/Jiwon/soccer/unitree_go2_kick"
+```
+
+터미널 A (먼저 시작):
+
+```bash
+python3 scripts/analyze_lidar_ball_topic_ros2.py \
+  --topic /utlidar/cloud_base --max-messages 603 --timeout-s 90 \
+  --output "$HOME/Desktop/Jiwon/lidar_bags/ball_1m_analysis.json"
+```
+
+터미널 B (그 다음, 저장 bag만 재생):
+
+```bash
+ros2 bag play "$HOME/Desktop/Jiwon/lidar_bags/go2_static_ball_1m_20260726_215950" \
+  --topics /utlidar/cloud_base
+```
+
+empty bag은 `--max-messages 805`, bag 경로와 JSON 이름을 `empty`로 바꿔 같은 순서로 실행한다.
+
+`rosbag2_py`가 설치된 별도 환경에서만 아래 직접 reader를 사용한다.
 
 개인 DDS workspace를 source한 Foxy shell에서 실행한다.
 

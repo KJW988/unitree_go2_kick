@@ -8,11 +8,17 @@ false positive를 판단하는 용도다.
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from statistics import median
 from typing import Dict, List
 
 import numpy as np
+
+# 스크립트를 저장소 밖의 Foxy shell에서 직접 실행해도 project package를 찾는다.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from dribblebot.perception.pointcloud2 import pointcloud2_to_xyz
 from dribblebot.perception.validated_lidar_ball_detector import (
@@ -32,7 +38,8 @@ def analyze_bag(uri: Path, topic: str, max_messages: int = 0) -> Dict[str, objec
         from rosidl_runtime_py.utilities import get_message
     except ImportError as error:
         raise RuntimeError(
-            "ROS2 Foxy environment is required: source the isolated Go2 DDS workspace first"
+            "rosbag2_py가 이 Foxy 설치에 없습니다. 의존성을 설치하지 말고 "
+            "scripts/analyze_lidar_ball_topic_ros2.py와 `ros2 bag play`를 사용하세요."
         ) from error
 
     reader = rosbag2_py.SequentialReader()
