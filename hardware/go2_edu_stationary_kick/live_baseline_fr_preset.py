@@ -194,7 +194,10 @@ def _release_motion_owner(*, without_stand_down: bool) -> None:
         sport.Init()
         sport.StandDown()
         print("MOTION_RELEASE_PATH=stand_down_then_release", flush=True)
-    release_status = switcher.ReleaseMode()
+    # unitree_sdk2py MotionSwitcherClient.ReleaseMode() returns ``(code, None)``,
+    # unlike the C++ SDK's scalar int32 return. 성공 code=0만 판정한다.
+    release_result = switcher.ReleaseMode()
+    release_status = release_result[0] if isinstance(release_result, tuple) else release_result
     if release_status != 0:
         raise RuntimeError("MotionSwitcher.ReleaseMode failed status={}".format(release_status))
     for _ in range(100):
