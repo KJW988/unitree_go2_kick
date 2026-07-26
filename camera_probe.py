@@ -65,6 +65,10 @@ def _probe() -> int:
     ]
     for topic in candidates:
         lines.extend((f"## {topic}", _run(["ros2", "topic", "info", "-v", topic]), ""))
+    # Unitree front video는 custom message라 field/codec 단서를 별도로 기록한다.
+    if "/frontvideostream" in candidates:
+        lines.extend(("## interface unitree_go/msg/Go2FrontVideoData",
+                      _run(["ros2", "interface", "show", "unitree_go/msg/Go2FrontVideoData"]), ""))
     if not candidates:
         lines.append("No camera/depth-like topics found. Full topic list follows:")
         lines.append(topics_text)
