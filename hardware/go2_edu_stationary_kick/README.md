@@ -127,3 +127,9 @@ python3 hardware/go2_edu_stationary_kick/live_baseline_fr_preset.py \
 Harnes/E-stop/no-ball/low-level ownership이 모두 준비된 뒤에만 `--execute
 --operator-confirm HARNESS_ESTOP_READY`를 추가한다. 이 runner는 gain을 숨겨진 default로
 정하지 않는다. operator가 입력한 값을 그대로 log에 기록해 다음 tuning의 근거로 쓴다.
+
+Sport/MCF가 standing pose를 소유한 경우 LowCmd는 무시된다. harness에서 standing baseline을
+capture한 뒤에만 `--release-motion-owner`를 추가하면 captured baseline LowCmd stream을 먼저
+200 Hz로 시작하고, 그 stream을 유지한 채 official `StandDown`/`ReleaseMode`를 수행한다.
+그 뒤 `--prehold-s` 동안 hold한 다음 preset을 시작한다. release만 먼저 수동으로 실행하면
+robot이 주저앉아 baseline이 사라지므로 사용하지 않는다.

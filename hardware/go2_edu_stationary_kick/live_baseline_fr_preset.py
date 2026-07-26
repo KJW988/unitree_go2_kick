@@ -7,7 +7,8 @@ SDK-order joint delta만 더한다. 즉 simulation default pose를 실물에 강
 
 외부 출처: Unitree SDK2 Python Go2 low-level stand example
 https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/example/go2/low_level/go2_stand_example.py
-Channel, LowCmd, CRC 사용 방식만 채택했다. MotionSwitcher/SportClient는 호출하지 않는다.
+Channel, LowCmd, CRC 사용 방식을 채택했다. ownership handoff는 명시적
+`--release-motion-owner`에서만 MotionSwitcher/SportClient를 사용한다.
 """
 from __future__ import annotations
 
@@ -102,6 +103,45 @@ def _make_command(command_type: Any) -> Any:
     return command
 
 
+class CommandStreamer:
+    """Ownership handoff 중에도 baseline hold LowCmd를 끊지 않고 보낸다."""
+
+    def __init__(self, publisher: Any, command_type: Any, crc_type: Any, target: np.ndarray, kp: float, kd: float) -> None:
+        self._publisher = publisher
+        self._command = _make_command(command_type)
+        self._crc = crc_type()
+        self._target = target.copy()
+        self._kp, self._kd = kp, kd
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="go2-lowcmd-stream", daemon=True)
+
+    def set_target(self, target: np.ndarray) -> None:
+        with self._lock:
+            self._target = target.copy()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        period, next_tick = 1.0 / CONTROL_HZ, time.monotonic()
+        while not self._stop.is_set():
+            with self._lock:
+                target = self._target.copy()
+            for index in range(12):
+                motor = self._command.motor_cmd[index]
+                motor.q, motor.dq = float(target[index]), 0.0
+                motor.kp, motor.kd, motor.tau = self._kp, self._kd, 0.0
+            self._command.crc = self._crc.Crc(self._command)
+            self._publisher.Write(self._command)
+            next_tick += period
+            self._stop.wait(max(0.0, next_tick - time.monotonic()))
+
+
 def _interpolate(elapsed_s: float, time_s: np.ndarray, positions: np.ndarray) -> np.ndarray:
     index = int(np.searchsorted(time_s, elapsed_s, side="right"))
     if index <= 0:
@@ -117,6 +157,34 @@ def _write_log(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _release_motion_owner() -> None:
+    """이미 실행 중인 baseline stream을 유지한 채 공식 ownership을 넘긴다."""
+    from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+    from unitree_sdk2py.go2.sport.sport_client import SportClient
+
+    sport = SportClient()
+    sport.SetTimeout(2.0)
+    sport.Init()
+    switcher = MotionSwitcherClient()
+    switcher.SetTimeout(2.0)
+    switcher.Init()
+    status, result = switcher.CheckMode()
+    owner = result.get("name", "")
+    print("MOTION_OWNER_BEFORE_RELEASE={!r} status={}".format(owner, status), flush=True)
+    if not owner:
+        return
+    # Unitree example also uses StandDown before ReleaseMode. Harness에서만 허용한다.
+    sport.StandDown()
+    switcher.ReleaseMode()
+    for _ in range(10):
+        status, result = switcher.CheckMode()
+        if not result.get("name", ""):
+            print("LOW_LEVEL_OWNERSHIP_READY", flush=True)
+            return
+        time.sleep(0.02)
+    raise RuntimeError("motion owner release failed: {}".format(result.get("name", "")))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interface", required=True)
@@ -125,12 +193,16 @@ def main() -> int:
     parser.add_argument("--kd", type=float, required=True, help="all 12 joints low-level damping gain")
     parser.add_argument("--execute", action="store_true", help="없으면 capture/target preview만 수행")
     parser.add_argument("--operator-confirm", help="execute에는 {} 필요".format(CONFIRMATION))
+    parser.add_argument("--release-motion-owner", action="store_true", help="capture 뒤 공식 Sport/MCF ownership을 해제하고 즉시 hold")
+    parser.add_argument("--prehold-s", type=float, default=1.0, help="release 뒤 baseline hold 시간")
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
         parser.error("--execute requires --operator-confirm {}".format(CONFIRMATION))
-    if not all(math.isfinite(value) and value > 0.0 for value in (args.kp, args.kd)):
-        parser.error("--kp and --kd must be positive finite")
+    if not all(math.isfinite(value) and value > 0.0 for value in (args.kp, args.kd, args.prehold_s)):
+        parser.error("--kp, --kd, and --prehold-s must be positive finite")
+    if args.release_motion_owner and not args.execute:
+        parser.error("--release-motion-owner requires --execute")
 
     teacher = load_trajectory(args.trajectory)
     errors = validate_artifact(teacher)
@@ -157,6 +229,8 @@ def main() -> int:
         "preset_duration_s": float(teacher["time_s"][-1]),
         "kp": args.kp,
         "kd": args.kd,
+        "release_motion_owner": args.release_motion_owner,
+        "prehold_s": args.prehold_s,
         "execute": args.execute,
         "records": [],
     }
@@ -173,26 +247,31 @@ def main() -> int:
         time.sleep(1.0)
     publisher = ChannelPublisher(TOPIC_LOWCMD, command_type)
     publisher.Init()
-    command, crc = _make_command(command_default), crc_type()
-    start, period = time.monotonic(), 1.0 / CONTROL_HZ
-    end_s, next_tick = float(teacher["time_s"][-1]), time.monotonic()
-    print("LOWCMD_ACTIVE frozen_FR_preset=true", flush=True)
-    while True:
-        now, elapsed = time.monotonic(), time.monotonic() - start
-        desired = _interpolate(min(elapsed, end_s), teacher["time_s"], target)
-        for index in range(12):
-            motor = command.motor_cmd[index]
-            motor.q, motor.dq, motor.kp, motor.kd, motor.tau = float(desired[index]), 0.0, args.kp, args.kd, 0.0
-        command.crc = crc.Crc(command)
-        publisher.Write(command)
-        state, stamp = buffer.latest()
-        if state is not None and now - stamp < 0.25:
-            q, dq, rpy = _read_state(state)
-            summary["records"].append({"t_s": elapsed, "target_sdk_q_rad": desired.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
-        if elapsed >= end_s:
-            break
-        next_tick += period
-        time.sleep(max(0.0, next_tick - time.monotonic()))
+    streamer = CommandStreamer(publisher, command_default, crc_type, baseline, args.kp, args.kd)
+    # Release 전부터 stream을 시작한다. Sport가 owner일 때는 무시되지만 release 순간에는
+    # 이미 같은 standing target이 200 Hz로 도착 중이므로 torque 공백을 최소화한다.
+    streamer.start()
+    if args.release_motion_owner:
+        _release_motion_owner()
+    start = time.monotonic()
+    end_s, next_tick = args.prehold_s + float(teacher["time_s"][-1]), time.monotonic()
+    print("LOWCMD_ACTIVE frozen_FR_preset=true prehold_s={}".format(args.prehold_s), flush=True)
+    try:
+        while True:
+            now, elapsed = time.monotonic(), time.monotonic() - start
+            teacher_elapsed = max(0.0, elapsed - args.prehold_s)
+            desired = _interpolate(teacher_elapsed, teacher["time_s"], target)
+            streamer.set_target(desired)
+            state, stamp = buffer.latest()
+            if state is not None and now - stamp < 0.25:
+                q, dq, rpy = _read_state(state)
+                summary["records"].append({"t_s": elapsed, "target_sdk_q_rad": desired.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
+            if elapsed >= end_s:
+                break
+            next_tick += 1.0 / CONTROL_HZ
+            time.sleep(max(0.0, next_tick - time.monotonic()))
+    finally:
+        streamer.stop()
     path = args.log_dir / ("live_baseline_fr_preset_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
     _write_log(path, summary)
     print("PRESET_COMPLETE log={}".format(path), flush=True)
