@@ -25,6 +25,27 @@ ip -br link
 SDK가 없을 때에는 사용자가 공식 repository의 README대로 실제 PC에 설치해야 한다. 이
 저장소는 SDK/dependency를 설치하지 않는다.
 
+## D435i + LiDAR perception transport probe
+
+YOLO는 D435i RGB에서 공 후보를 만들고, D435i depth로 거리를 우선 측정한다. Go2
+LiDAR는 작은 공의 단독 검출을 보장하지 않으므로 depth cross-check, 장애물, odometry
+기반 접근/추적용으로 사용한다. AprilTag는 벽 위 tag의 pose를 측정한 뒤 지면 투영점을
+가상 골문 목표로 쓴다. 이 runner는 perception이나 robot motion을 수행하지 않는다.
+
+실제 frontend를 연결하기 전에 아래 **read-only** probe로 D435i USB 장치와 ROS2 graph의
+image/depth/cloud/odom/tf topic 및 type을 기록한다. 이 명령은 LowCmd, SportClient,
+MotionSwitcher, DDS publisher를 만들지 않는다.
+
+```bash
+python hardware/go2_edu_stationary_kick/probe_perception_stack.py
+```
+
+출력 JSON의 `ros2_candidate_topics`와 `system.realsense`를 기준으로 camera intrinsics,
+camera→base extrinsic, LiDAR→base transform, timestamp source를 명시한다. D435i의 공식
+깊이 동작 범위는 약 0.3–3 m이므로, 최종 킥 거리에서 시야를 벗어난 공은 마지막 신뢰
+측정과 odometry로만 짧게 유지하고 stale/jump gate를 통과하지 못하면 kick을 금지한다.
+출처: [Intel D435i specifications](https://www.intel.com/content/www/us/en/products/sku/190004/intel-realsense-depth-camera-d435i/specifications.html).
+
 ## artifact와 attestation
 
 실제 PC에 이 저장소를 복사한 뒤 artifact를 생성한다.
