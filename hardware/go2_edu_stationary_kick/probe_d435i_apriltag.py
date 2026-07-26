@@ -20,7 +20,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Tuple
 
 
 def _require_runtime() -> tuple[Any, Any, Any]:
@@ -52,6 +52,29 @@ def _area(np: Any, corners: Any) -> float:
     points = np.asarray(corners, dtype=np.float64).reshape(-1, 2)
     return 0.5 * abs(float(np.dot(points[:, 0], np.roll(points[:, 1], -1))
                            - np.dot(points[:, 1], np.roll(points[:, 0], -1))))
+
+
+def _estimate_square_pose(cv2: Any, np: Any, corners: Any, tag_size_m: float,
+                          camera_matrix: Any, distortion: Any) -> Optional[Tuple[Any, Any]]:
+    """OpenCV 4 legacy API와 OpenCV 5의 solvePnP 경로를 모두 지원한다."""
+    if hasattr(cv2.aruco, "estimatePoseSingleMarkers"):
+        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+            [corners], float(tag_size_m), camera_matrix, distortion
+        )
+        return rvecs[0, 0, :], tvecs[0, 0, :]
+    half = float(tag_size_m) * 0.5
+    object_points = np.asarray(
+        ((-half, half, 0.0), (half, half, 0.0), (half, -half, 0.0), (-half, -half, 0.0)),
+        dtype=np.float64,
+    )
+    flag = getattr(cv2, "SOLVEPNP_IPPE_SQUARE", cv2.SOLVEPNP_ITERATIVE)
+    success, rvec, tvec = cv2.solvePnP(
+        object_points, np.asarray(corners, dtype=np.float64).reshape(4, 2),
+        camera_matrix, distortion, flags=flag,
+    )
+    if not success:
+        return None
+    return rvec.reshape(3), tvec.reshape(3)
 
 
 def main() -> int:
@@ -126,14 +149,15 @@ def main() -> int:
                 valid_areas.append(area)
             if not valid_corners:
                 continue
-            rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                valid_corners, float(args.tag_size_m), camera_matrix, distortion
-            )
             annotated = image.copy()
             cv2.aruco.drawDetectedMarkers(annotated, valid_corners, np.asarray(valid_ids, dtype=np.int32).reshape(-1, 1))
-            for marker_corners, marker_id, area, rvec, tvec in zip(
-                valid_corners, valid_ids, valid_areas, rvecs[:, 0, :], tvecs[:, 0, :]
-            ):
+            for marker_corners, marker_id, area in zip(valid_corners, valid_ids, valid_areas):
+                pose = _estimate_square_pose(
+                    cv2, np, marker_corners, args.tag_size_m, camera_matrix, distortion
+                )
+                if pose is None:
+                    continue
+                rvec, tvec = pose
                 camera_translation = [float(value) for value in tvec]
                 camera_rotation_rvec = [float(value) for value in rvec]
                 current = detections.get(marker_id)
