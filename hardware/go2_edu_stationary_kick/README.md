@@ -58,6 +58,15 @@ python hardware/go2_edu_stationary_kick/capture_d435i_rgbd.py --duration-s 10
 출력 `metadata.json`의 `camera_to_base_extrinsic`은 의도적으로 `null`이다. 카메라 mount의
 실측 rigid transform을 얻기 전에는 base-frame ball/Tag 좌표나 접근 command를 만들지 않는다.
 
+카메라를 정지 standing 자세에서 대략 아래로 향하게 고정한 뒤에는 다음 read-only probe로
+D435i의 factory IMU→RGB 변환과 accelerometer/gyroscope 통계를 기록한다. D435i IMU는
+camera의 실제 roll/pitch 확인에는 유용하지만, 자력계가 없으므로 이것만으로는 base 기준
+yaw 또는 camera 위치 `x/y/z`를 얻을 수 없다.
+
+```bash
+python hardware/go2_edu_stationary_kick/probe_d435i_imu_extrinsics.py --duration-s 10
+```
+
 ## artifact와 attestation
 
 실제 PC에 이 저장소를 복사한 뒤 artifact를 생성한다.
