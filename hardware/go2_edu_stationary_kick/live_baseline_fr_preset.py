@@ -185,6 +185,26 @@ def _release_motion_owner() -> None:
     raise RuntimeError("motion owner release failed: {}".format(result.get("name", "")))
 
 
+def _handback_motion_owner(mode: str) -> None:
+    """LowCmd 종료 뒤 Unitree MotionSwitcher의 controller mode를 다시 선택한다."""
+    from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+
+    switcher = MotionSwitcherClient()
+    switcher.SetTimeout(2.0)
+    switcher.Init()
+    status, _ = switcher.SelectMode(mode)
+    if status != 0:
+        raise RuntimeError("controller handback SelectMode({!r}) failed status={}".format(mode, status))
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        status, result = switcher.CheckMode()
+        if status == 0 and result.get("name", "") == mode:
+            print("CONTROLLER_HANDBACK_READY mode={}".format(mode), flush=True)
+            return
+        time.sleep(0.05)
+    raise RuntimeError("controller handback did not acquire mode {!r}".format(mode))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interface", required=True)
@@ -198,6 +218,8 @@ def main() -> int:
     parser.add_argument("--hold-only", action="store_true", help="FR preset 대신 captured standing baseline만 유지")
     parser.add_argument("--hold-only-s", type=float, default=3.0, help="--hold-only 유지 시간")
     parser.add_argument("--hold-after-s", type=float, default=0.0, help="preset/hold 뒤 baseline을 추가 유지할 시간; 0이면 즉시 종료")
+    parser.add_argument("--preset-time-scale", type=float, default=1.0, help="1보다 작으면 preset을 더 빠르게 재생")
+    parser.add_argument("--handback-mode", default="mcf", help="종료 뒤 controller ownership으로 다시 선택할 MotionSwitcher mode")
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
@@ -206,6 +228,10 @@ def main() -> int:
         parser.error("--kp, --kd, --prehold-s, and --hold-only-s must be positive finite")
     if not math.isfinite(args.hold_after_s) or args.hold_after_s < 0.0:
         parser.error("--hold-after-s must be finite and non-negative")
+    if not math.isfinite(args.preset_time_scale) or not 0.5 <= args.preset_time_scale <= 2.0:
+        parser.error("--preset-time-scale must be between 0.5 and 2.0")
+    if not args.handback_mode.strip():
+        parser.error("--handback-mode must be non-empty")
     if args.release_motion_owner and not args.execute:
         parser.error("--release-motion-owner requires --execute")
 
@@ -239,6 +265,8 @@ def main() -> int:
         "hold_only": args.hold_only,
         "hold_only_s": args.hold_only_s,
         "hold_after_s": args.hold_after_s,
+        "preset_time_scale": args.preset_time_scale,
+        "handback_mode": args.handback_mode,
         "execute": args.execute,
         "records": [],
     }
@@ -262,13 +290,13 @@ def main() -> int:
     if args.release_motion_owner:
         _release_motion_owner()
     start = time.monotonic()
-    motion_s = args.hold_only_s if args.hold_only else float(teacher["time_s"][-1])
+    motion_s = args.hold_only_s if args.hold_only else args.preset_time_scale * float(teacher["time_s"][-1])
     end_s, next_tick = args.prehold_s + motion_s, time.monotonic()
     print("LOWCMD_ACTIVE frozen_FR_preset={} hold_only={} prehold_s={}".format(not args.hold_only, args.hold_only, args.prehold_s), flush=True)
     try:
         while True:
             now, elapsed = time.monotonic(), time.monotonic() - start
-            teacher_elapsed = max(0.0, elapsed - args.prehold_s)
+            teacher_elapsed = max(0.0, elapsed - args.prehold_s) / args.preset_time_scale
             desired = baseline if args.hold_only else _interpolate(teacher_elapsed, teacher["time_s"], target)
             streamer.set_target(desired)
             state, stamp = buffer.latest()
@@ -292,6 +320,7 @@ def main() -> int:
                 time.sleep(1.0 / CONTROL_HZ)
     finally:
         streamer.stop()
+    _handback_motion_owner(args.handback_mode)
     path = args.log_dir / ("live_baseline_fr_preset_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
     _write_log(path, summary)
     print("PRESET_COMPLETE log={}".format(path), flush=True)
