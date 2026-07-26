@@ -24,3 +24,5 @@ PYTHONPATH=. python3 scripts/test_camera_lidar_ball_fusion.py
 ## 실물 sensor-only probe
 
 정지 로봇·E-stop 확보 후 `python3 camera_probe.py`를 실행하면 Go2 `eth0` DDS graph에서 camera/depth-like topic과 type metadata만 읽어 `camera_probe_report.txt`에 기록한다. 이미지 frame을 구독·기록하지 않으며 control topic, service, action은 사용하지 않는다. 이 report로 RGB topic, `sensor_msgs/msg/CameraInfo`, metric Depth topic의 실제 이름과 type을 확인한 뒤에만 YOLO frontend adapter를 구현한다.
+
+`camera_frame_probe.py`는 `/frontvideostream`의 `Go2FrontVideoData` 한 frame을 read-only로 구독해 720p/360p/180p byte length와 codec magic만 출력한다. frame bytes는 저장하지 않는다.
