@@ -197,12 +197,15 @@ def main() -> int:
     parser.add_argument("--prehold-s", type=float, default=1.0, help="release 뒤 baseline hold 시간")
     parser.add_argument("--hold-only", action="store_true", help="FR preset 대신 captured standing baseline만 유지")
     parser.add_argument("--hold-only-s", type=float, default=3.0, help="--hold-only 유지 시간")
+    parser.add_argument("--hold-after-s", type=float, default=0.0, help="preset/hold 뒤 baseline을 추가 유지할 시간; 0이면 즉시 종료")
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
         parser.error("--execute requires --operator-confirm {}".format(CONFIRMATION))
     if not all(math.isfinite(value) and value > 0.0 for value in (args.kp, args.kd, args.prehold_s, args.hold_only_s)):
         parser.error("--kp, --kd, --prehold-s, and --hold-only-s must be positive finite")
+    if not math.isfinite(args.hold_after_s) or args.hold_after_s < 0.0:
+        parser.error("--hold-after-s must be finite and non-negative")
     if args.release_motion_owner and not args.execute:
         parser.error("--release-motion-owner requires --execute")
 
@@ -235,6 +238,7 @@ def main() -> int:
         "prehold_s": args.prehold_s,
         "hold_only": args.hold_only,
         "hold_only_s": args.hold_only_s,
+        "hold_after_s": args.hold_after_s,
         "execute": args.execute,
         "records": [],
     }
@@ -275,6 +279,17 @@ def main() -> int:
                 break
             next_tick += 1.0 / CONTROL_HZ
             time.sleep(max(0.0, next_tick - time.monotonic()))
+        if args.hold_after_s > 0.0:
+            print("POST_HOLD_ACTIVE duration_s={}".format(args.hold_after_s), flush=True)
+            deadline = time.monotonic() + args.hold_after_s
+            while time.monotonic() < deadline:
+                now = time.monotonic()
+                streamer.set_target(baseline)
+                state, stamp = buffer.latest()
+                if state is not None and now - stamp < 0.25:
+                    q, dq, rpy = _read_state(state)
+                    summary["records"].append({"t_s": now - start, "target_sdk_q_rad": baseline.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
+                time.sleep(1.0 / CONTROL_HZ)
     finally:
         streamer.stop()
     path = args.log_dir / ("live_baseline_fr_preset_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")

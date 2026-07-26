@@ -137,3 +137,6 @@ robot이 주저앉아 baseline이 사라지므로 사용하지 않는다.
 `--release-motion-owner`를 처음 사용할 때는 `--hold-only --hold-only-s 3`으로 standing
 handoff만 먼저 확인한다. 이 단계에서 robot이 자세를 유지하고 log의 joint tracking이
 작아야만 `--hold-only`를 빼고 FR preset을 실행한다.
+
+명령이 끝나면 LowCmd stream도 종료되어 harness robot은 다시 힘이 빠질 수 있다. 관찰이나
+manual handback 전에 baseline을 유지하려면 `--hold-after-s 30`처럼 추가 hold 시간을 준다.
