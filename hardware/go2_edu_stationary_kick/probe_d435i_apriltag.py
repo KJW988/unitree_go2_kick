@@ -94,7 +94,7 @@ def main() -> int:
         detections: dict[int, dict[str, Any]] = {}
         frame_count, rejected_small_count = 0, 0
         largest_annotated_area_px = 0.0
-        best_image, color_intrinsics = None, None
+        best_image, color_intrinsics, last_image = None, None, None
         deadline = time.monotonic() + args.duration_s
         while time.monotonic() < deadline:
             frames = pipeline.wait_for_frames(timeout_ms=2000)
@@ -102,11 +102,14 @@ def main() -> int:
             if not color_frame:
                 continue
             image = np.asanyarray(color_frame.get_data())
-            corners, ids, _ = detector.detectMarkers(image)
+            last_image = image.copy()
+            color_intrinsics = color_frame.profile.as_video_stream_profile().intrinsics
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            corners, ids, _ = detector.detectMarkers(gray)
             frame_count += 1
             if ids is None:
                 continue
-            intrinsics = color_frame.profile.as_video_stream_profile().intrinsics
+            intrinsics = color_intrinsics
             camera_matrix = np.array(
                 [[intrinsics.fx, 0.0, intrinsics.ppx], [0.0, intrinsics.fy, intrinsics.ppy], [0.0, 0.0, 1.0]],
                 dtype=np.float64,
@@ -166,6 +169,11 @@ def main() -> int:
             image_name = "best_detection.jpg"
             if not cv2.imwrite(str(capture_dir / image_name), best_image):
                 raise RuntimeError("annotated AprilTag image 저장에 실패했습니다")
+        last_image_name = None
+        if last_image is not None:
+            last_image_name = "last_rgb.jpg"
+            if not cv2.imwrite(str(capture_dir / last_image_name), last_image):
+                raise RuntimeError("last RGB image 저장에 실패했습니다")
         payload = {
             "schema_version": 1,
             "kind": "read_only_d435i_apriltag_probe",
@@ -183,6 +191,7 @@ def main() -> int:
             "rejected_small_count": rejected_small_count,
             "detected_tags": [detections[tag_id] for tag_id in sorted(detections)],
             "best_annotated_image": image_name,
+            "last_rgb_image": last_image_name,
             "camera_to_base_extrinsic": None,
             "ground_projection": None,
         }
