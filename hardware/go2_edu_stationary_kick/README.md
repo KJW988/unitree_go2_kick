@@ -141,7 +141,13 @@ handoff만 먼저 확인한다. 이 단계에서 robot이 자세를 유지하고
 명령이 끝나면 LowCmd stream도 종료되어 harness robot은 다시 힘이 빠질 수 있다. 관찰이나
 manual handback 전에 baseline을 유지하려면 `--hold-after-s 30`처럼 추가 hold 시간을 준다.
 
-정상 종료 때는 LowCmd stream을 끊고 `MotionSwitcherClient.SelectMode("mcf")`로 controller
-mode를 다시 선택한다. 실제 Go2에서 확인된 owner 이름이 `mcf`이므로 기본값은 `mcf`다.
-`--preset-time-scale 0.85`는 frozen FR preset의 관절 path를 바꾸지 않고 전체 시간만 85%로
-줄여 약 18% 빠르게 재생한다. 처음 speed-up은 harness에서 0.85보다 빠르게 하지 않는다.
+MotionSwitcher가 반환한 owner name은 firmware별로 `SelectMode()` 가능한 alias와 다를 수
+있다. 기본 handback은 하지 않는다. 먼저 아래 read-only query로 controller mode를 확인하고
+확정된 alias가 있을 때만 `--handback-mode ALIAS`를 준다.
+
+```bash
+python3 hardware/go2_edu_stationary_kick/query_motion_switcher.py --interface eth0
+```
+
+`--preset-time-scale 0.70`은 frozen FR preset의 관절 path를 바꾸지 않고 전체 시간을 70%로
+줄인다. `0.20`은 5배 속도다. handoff tracking이 안정된 harness run에서만 점진적으로 올린다.

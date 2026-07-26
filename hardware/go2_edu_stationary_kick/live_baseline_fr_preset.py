@@ -152,6 +152,11 @@ def _interpolate(elapsed_s: float, time_s: np.ndarray, positions: np.ndarray) ->
     return (1.0 - alpha) * positions[index - 1] + alpha * positions[index]
 
 
+def _minimum_jerk(value: float) -> float:
+    value = min(1.0, max(0.0, value))
+    return value**3 * (10.0 - 15.0 * value + 6.0 * value**2)
+
+
 def _write_log(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -219,7 +224,8 @@ def main() -> int:
     parser.add_argument("--hold-only-s", type=float, default=3.0, help="--hold-only 유지 시간")
     parser.add_argument("--hold-after-s", type=float, default=0.0, help="preset/hold 뒤 baseline을 추가 유지할 시간; 0이면 즉시 종료")
     parser.add_argument("--preset-time-scale", type=float, default=1.0, help="1보다 작으면 preset을 더 빠르게 재생")
-    parser.add_argument("--handback-mode", default="mcf", help="종료 뒤 controller ownership으로 다시 선택할 MotionSwitcher mode")
+    parser.add_argument("--handoff-blend-s", type=float, default=0.4, help="release 직후 actual q에서 baseline으로 연결하는 minimum-jerk 시간")
+    parser.add_argument("--handback-mode", default="", help="검증 후에만 지정하는 controller MotionSwitcher mode")
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
@@ -228,10 +234,10 @@ def main() -> int:
         parser.error("--kp, --kd, --prehold-s, and --hold-only-s must be positive finite")
     if not math.isfinite(args.hold_after_s) or args.hold_after_s < 0.0:
         parser.error("--hold-after-s must be finite and non-negative")
-    if not math.isfinite(args.preset_time_scale) or not 0.5 <= args.preset_time_scale <= 2.0:
-        parser.error("--preset-time-scale must be between 0.5 and 2.0")
-    if not args.handback_mode.strip():
-        parser.error("--handback-mode must be non-empty")
+    if not math.isfinite(args.preset_time_scale) or not 0.2 <= args.preset_time_scale <= 2.0:
+        parser.error("--preset-time-scale must be between 0.2 and 2.0")
+    if not math.isfinite(args.handoff_blend_s) or args.handoff_blend_s <= 0.0:
+        parser.error("--handoff-blend-s must be positive and finite")
     if args.release_motion_owner and not args.execute:
         parser.error("--release-motion-owner requires --execute")
 
@@ -266,6 +272,7 @@ def main() -> int:
         "hold_only_s": args.hold_only_s,
         "hold_after_s": args.hold_after_s,
         "preset_time_scale": args.preset_time_scale,
+        "handoff_blend_s": args.handoff_blend_s,
         "handback_mode": args.handback_mode,
         "execute": args.execute,
         "records": [],
@@ -287,17 +294,26 @@ def main() -> int:
     # Release 전부터 stream을 시작한다. Sport가 owner일 때는 무시되지만 release 순간에는
     # 이미 같은 standing target이 200 Hz로 도착 중이므로 torque 공백을 최소화한다.
     streamer.start()
+    release_q = baseline.copy()
     if args.release_motion_owner:
         _release_motion_owner()
+        message, stamp = buffer.latest()
+        if message is None or time.monotonic() - stamp >= 0.25:
+            streamer.stop()
+            raise RuntimeError("release 직후 fresh rt/lowstate를 받지 못했습니다")
+        release_q, _, _ = _read_state(message)
     start = time.monotonic()
     motion_s = args.hold_only_s if args.hold_only else args.preset_time_scale * float(teacher["time_s"][-1])
-    end_s, next_tick = args.prehold_s + motion_s, time.monotonic()
-    print("LOWCMD_ACTIVE frozen_FR_preset={} hold_only={} prehold_s={}".format(not args.hold_only, args.hold_only, args.prehold_s), flush=True)
+    end_s, next_tick = args.handoff_blend_s + args.prehold_s + motion_s, time.monotonic()
+    print("LOWCMD_ACTIVE frozen_FR_preset={} hold_only={} handoff_blend_s={} prehold_s={}".format(not args.hold_only, args.hold_only, args.handoff_blend_s, args.prehold_s), flush=True)
     try:
         while True:
             now, elapsed = time.monotonic(), time.monotonic() - start
-            teacher_elapsed = max(0.0, elapsed - args.prehold_s) / args.preset_time_scale
-            desired = baseline if args.hold_only else _interpolate(teacher_elapsed, teacher["time_s"], target)
+            if elapsed < args.handoff_blend_s:
+                desired = release_q + _minimum_jerk(elapsed / args.handoff_blend_s) * (baseline - release_q)
+            else:
+                teacher_elapsed = max(0.0, elapsed - args.handoff_blend_s - args.prehold_s) / args.preset_time_scale
+                desired = baseline if args.hold_only else _interpolate(teacher_elapsed, teacher["time_s"], target)
             streamer.set_target(desired)
             state, stamp = buffer.latest()
             if state is not None and now - stamp < 0.25:
@@ -320,10 +336,11 @@ def main() -> int:
                 time.sleep(1.0 / CONTROL_HZ)
     finally:
         streamer.stop()
-    _handback_motion_owner(args.handback_mode)
     path = args.log_dir / ("live_baseline_fr_preset_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
     _write_log(path, summary)
     print("PRESET_COMPLETE log={}".format(path), flush=True)
+    if args.handback_mode:
+        _handback_motion_owner(args.handback_mode)
     return 0
 
 
