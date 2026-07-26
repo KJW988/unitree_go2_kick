@@ -169,6 +169,20 @@ MotionSwitcher가 반환한 owner name은 firmware별로 `SelectMode()` 가능�
 python3 hardware/go2_edu_stationary_kick/query_motion_switcher.py --interface eth0
 ```
 
+Go2의 공식 MotionSwitcher 예제는 controller mode alias로 `normal`을 사용한다. persistent
+kick session의 controller 우선권을 구현하기 전에는 아래 probe로 해당 EDU firmware에서
+`normal` reacquire가 성공하는지 확인한다. 이 probe는 LowCmd와 Sport motion 명령을 만들지
+않지만 mode selection은 수행하므로 robot이 정상 standing이고 clear zone인 상태에서만 쓴다.
+
+```bash
+python3 hardware/go2_edu_stationary_kick/probe_motion_switcher_alias.py \
+  --interface eth0 --execute \
+  --operator-confirm SELECT_NORMAL_MODE_READY
+```
+
+`select_status=0`, `after.name`이 비어 있지 않으면 controller-mode reacquire 후보가
+확인된 것이다. 출처: [Unitree MotionSwitcher Python example](https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/example/motionSwitcher/motion_switcher_example.py), [Unitree Go2 C++ stand example](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp).
+
 `--preset-time-scale 0.70`은 frozen FR preset의 관절 path를 바꾸지 않고 전체 시간을 70%로
 줄인다. `0.20`은 5배 속도다. handoff tracking이 안정된 harness run에서만 점진적으로 올린다.
 
