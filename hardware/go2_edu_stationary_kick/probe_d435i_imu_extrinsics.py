@@ -16,6 +16,7 @@ import argparse
 import json
 import math
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,48 +62,86 @@ def main() -> int:
         parser.error("--accel-fps and --gyro-fps must be positive")
 
     np, rs = _require_runtime()
-    pipeline, config = rs.pipeline(), rs.config()
-    # 이 장치가 보고한 지원 profile: accel 100/200/400 Hz, gyro 200/400 Hz.
-    # USB 2.x에서 RGB를 같이 열지 않아 motion stream timeout을 피한다.
-    config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, args.accel_fps)
-    config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, args.gyro_fps)
-    profile = None
-    try:
-        profile = pipeline.start(config)
-        device = profile.get_device()
-        accel_profile = profile.get_stream(rs.stream.accel).as_motion_stream_profile()
-        gyro_profile = profile.get_stream(rs.stream.gyro).as_motion_stream_profile()
+    devices = list(rs.context().query_devices())
+    if not devices:
+        raise RuntimeError("D435i device를 찾지 못했습니다")
+    device = devices[0]
+    motion_sensor, accel_profile, gyro_profile = None, None, None
+    for sensor in device.query_sensors():
+        profiles = list(sensor.get_stream_profiles())
+        accel_candidates = [
+            profile for profile in profiles
+            if profile.stream_type() == rs.stream.accel
+            and profile.format() == rs.format.motion_xyz32f
+            and profile.fps() == args.accel_fps
+        ]
+        gyro_candidates = [
+            profile for profile in profiles
+            if profile.stream_type() == rs.stream.gyro
+            and profile.format() == rs.format.motion_xyz32f
+            and profile.fps() == args.gyro_fps
+        ]
+        if accel_candidates and gyro_candidates:
+            motion_sensor = sensor
+            accel_profile, gyro_profile = accel_candidates[0], gyro_candidates[0]
+            break
+    if motion_sensor is None or accel_profile is None or gyro_profile is None:
+        raise RuntimeError(
+            "요청한 D435i motion profile을 찾지 못했습니다 (accel={} Hz, gyro={} Hz)".format(
+                args.accel_fps, args.gyro_fps
+            )
+        )
 
+    accel_samples: list[list[float]] = []
+    gyro_samples: list[list[float]] = []
+    last_motion_stamp_ms: dict[Any, float] = {}
+    duplicate_motion_frame_count = [0]
+    sample_lock = threading.Lock()
+
+    def on_motion_frame(frame: Any) -> None:
+        if not frame.is_motion_frame():
+            return
+        stream_type = frame.get_profile().stream_type()
+        stamp_ms = float(frame.get_timestamp())
+        motion = frame.as_motion_frame().get_motion_data()
+        vector = [float(motion.x), float(motion.y), float(motion.z)]
+        with sample_lock:
+            if last_motion_stamp_ms.get(stream_type) == stamp_ms:
+                duplicate_motion_frame_count[0] += 1
+                return
+            last_motion_stamp_ms[stream_type] = stamp_ms
+            if stream_type == rs.stream.accel:
+                accel_samples.append(vector)
+            elif stream_type == rs.stream.gyro:
+                gyro_samples.append(vector)
+
+    sensor_started = False
+    try:
+        # Motion Module callback을 직접 사용한다. 이 D435i에서는 rs.pipeline의
+        # wait_for_frames가 IMU-only stream을 timeout 내지만 sensor callback은
+        # motion frame을 독립적으로 전달한다.
+        motion_sensor.open([accel_profile, gyro_profile])
+        motion_sensor.start(on_motion_frame)
+        sensor_started = True
         warmup_deadline = time.monotonic() + args.warmup_s
         while time.monotonic() < warmup_deadline:
-            pipeline.wait_for_frames(timeout_ms=2000)
-
-        accel_samples: list[list[float]] = []
-        gyro_samples: list[list[float]] = []
-        last_motion_stamp_ms: dict[Any, float] = {}
-        duplicate_motion_frame_count = 0
+            time.sleep(0.02)
+        with sample_lock:
+            accel_samples.clear()
+            gyro_samples.clear()
+            last_motion_stamp_ms.clear()
+            duplicate_motion_frame_count[0] = 0
         deadline = time.monotonic() + args.duration_s
         while time.monotonic() < deadline:
-            frames = pipeline.wait_for_frames(timeout_ms=2000)
-            for frame in frames:
-                if not frame.is_motion_frame():
-                    continue
-                stream_type = frame.get_profile().stream_type()
-                stamp_ms = float(frame.get_timestamp())
-                if last_motion_stamp_ms.get(stream_type) == stamp_ms:
-                    duplicate_motion_frame_count += 1
-                    continue
-                last_motion_stamp_ms[stream_type] = stamp_ms
-                motion = frame.as_motion_frame().get_motion_data()
-                vector = [float(motion.x), float(motion.y), float(motion.z)]
-                if stream_type == rs.stream.accel:
-                    accel_samples.append(vector)
-                elif stream_type == rs.stream.gyro:
-                    gyro_samples.append(vector)
-        if not accel_samples or not gyro_samples:
+            time.sleep(0.02)
+        with sample_lock:
+            captured_accel = list(accel_samples)
+            captured_gyro = list(gyro_samples)
+            captured_duplicate_count = duplicate_motion_frame_count[0]
+        if not captured_accel or not captured_gyro:
             raise RuntimeError(
                 "D435i accelerometer/gyroscope sample을 모두 받지 못했습니다 "
-                "(accel={}, gyro={})".format(len(accel_samples), len(gyro_samples))
+                "(accel={}, gyro={})".format(len(captured_accel), len(captured_gyro))
             )
 
         created = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -124,21 +163,23 @@ def main() -> int:
             "duration_s": args.duration_s,
             "accel_to_color": None,
             "gyro_to_color": None,
-            "accelerometer_m_s2": _vector_stats(np, accel_samples),
-            "gyroscope_rad_s": _vector_stats(np, gyro_samples),
-            "duplicate_motion_frame_count": duplicate_motion_frame_count,
+            "accelerometer_m_s2": _vector_stats(np, captured_accel),
+            "gyroscope_rad_s": _vector_stats(np, captured_gyro),
+            "duplicate_motion_frame_count": captured_duplicate_count,
             "camera_to_base_extrinsic": None,
         }
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(
             "D435I_IMU_PROBE_OK accel={} gyro={} output={}".format(
-                len(accel_samples), len(gyro_samples), output_path
+                len(captured_accel), len(captured_gyro), output_path
             )
         )
         return 0
     finally:
-        if profile is not None:
-            pipeline.stop()
+        if sensor_started:
+            motion_sensor.stop()
+        if motion_sensor is not None:
+            motion_sensor.close()
 
 
 if __name__ == "__main__":
