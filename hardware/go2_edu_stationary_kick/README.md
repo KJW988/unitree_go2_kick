@@ -159,24 +159,15 @@ release 전부터 operator가 지정한 full `Kp/Kd` standing target을 계속 �
 `--handoff-blend-s`로 actual `release_q`에서 standing baseline target만 연결한다.
 
 명령이 단순 종료하면 LowCmd stream도 종료되어 harness robot은 다시 힘이 빠질 수 있다.
-컨트롤러로 안전하게 돌려줄 때는 `--handback-mcf`를 사용한다. 이 EDU firmware에서 확인한
-경로는 LowCmd stream을 **계속 유지한 채** `RobotStateClient.ServiceSwitch("mcf", True)`를
-호출하고, service `mcf=0` 및 MotionSwitcher owner=`mcf`를 모두 확인한 다음에만 stream을
-종료한다. 따라서 `--hold-after-s` 끝에서 robot이 먼저 주저앉지 않는다.
+이 EDU firmware에서는 LowCmd가 살아 있는 동안
+`RobotStateClient.ServiceSwitch("mcf", True)`가 `3104`으로 거부됐다. 반대로 stream이
+종료된 뒤에는 MCF를 복구할 수 있지만, 그 사이 지지 토크 공백이 생긴다. 따라서 이 runner는
+현재 자동 LowCmd→MCF handback을 제공하지 않는다. `--hold-after-s`는 관찰 시간을 늘릴
+뿐 종료 뒤의 토크 공백을 해결하지 않는다.
 
-```bash
-python3 hardware/go2_edu_stationary_kick/live_baseline_fr_preset.py \
-  --interface eth0 --trajectory hardware_measurements/go2_fr_kick_teacher_x10.npz \
-  --kp 60 --kd 5 --execute --release-motion-owner \
-  --release-without-stand-down --handoff-blend-s 1.2 --prehold-s 1 \
-  --hold-only --hold-only-s 3 --hold-after-s 20 --handback-mcf \
-  --operator-confirm HARNESS_ESTOP_READY
-```
-
-정상 종료 전에 `MCF_HANDBACK_READY service_status=0 motion_owner='mcf'`가 출력되어야 한다.
-그 뒤 physical controller가 바로 제어를 가져가야 한다. 출력되지 않고 실패하면 자동으로
-LowCmd를 끄는 상태 전환을 신뢰하면 안 되므로, 하네스/E-stop으로 안전을 유지하고 log를
-확인한다. 출처: [Unitree RobotStateClient](https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/unitree_sdk2py/go2/robot_state/robot_state_client.py), [Unitree Go2 C++ stand example](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp).
+즉, persistent kick session과 controller 우선권은 firmware가 제공하는 원자적 handback API
+또는 MCF 내부에서 실행되는 kick action을 확보하기 전까지 이 LowCmd runner로 구현하면 안
+된다. 출처: [Unitree RobotStateClient](https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/unitree_sdk2py/go2/robot_state/robot_state_client.py), [Unitree Go2 C++ stand example](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp).
 
 `--preset-time-scale 0.70`은 frozen FR preset의 관절 path를 바꾸지 않고 전체 시간을 70%로
 줄인다. `0.20`은 5배 속도다. handoff tracking이 안정된 harness run에서만 점진적으로 올린다.
