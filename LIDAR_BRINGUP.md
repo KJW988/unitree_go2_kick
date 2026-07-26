@@ -97,3 +97,17 @@ python3 scripts/analyze_lidar_ball_bag_ros2.py \
 
 두 JSON은 후보 통계일 뿐이며, 이 단계에서 supervisor/locomotion/kick 경로는
 어떤 값도 받지 않는다.
+
+## 가장 쉬운 실행 (권장)
+
+저장된 ball/empty bag이 이미 있는 Jetson의 repo root에서 다음 한 줄만 실행한다.
+
+```bash
+python3 run.py
+```
+
+`run.py`는 Foxy와 개인 DDS workspace를 자동으로 source한 뒤, `ROS_LOCALHOST_ONLY=1`로
+고정된 localhost에서 bag을 순서대로 재생·분석한다. 실제 Go2 DDS, motion, motor, policy에는
+접근하지 않는다. 결과는 `~/Desktop/Jiwon/lidar_bags/ball_1m_analysis.json` 및
+`empty_analysis.json`에 저장된다. 경로가 다르면 `GO2_LIDAR_SETUP` 또는
+`GO2_LIDAR_BAG_ROOT` 환경변수로만 바꿀 수 있다.
