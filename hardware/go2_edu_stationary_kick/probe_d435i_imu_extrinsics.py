@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""D435i factory IMU↔RGB 변환과 정지 IMU 통계를 read-only로 기록한다.
+"""D435i 정지 IMU 통계를 read-only로 기록한다.
 
-Go2 DDS, LowCmd, SportClient, MotionSwitcher를 사용하지 않는다. D435i의 color,
-accelerometer, gyroscope stream만 열어 camera 내부 factory extrinsic과 정지 시 IMU
-통계를 기록한다.
+Go2 DDS, LowCmd, SportClient, MotionSwitcher를 사용하지 않는다. D435i의
+accelerometer와 gyroscope stream만 열어 정지 시 IMU 통계를 기록한다. RGB+IMU
+동시 stream은 USB 2.x 연결에서 timeout 날 수 있어 의도적으로 열지 않는다.
 
 출처: Intel librealsense SDK 2.0 motion stream/extrinsics API
 https://github.com/realsenseai/librealsense/tree/v2.56.5/wrappers/python
@@ -33,13 +33,6 @@ def _require_runtime() -> tuple[Any, Any]:
     return np, rs
 
 
-def _extrinsics_dict(extrinsics: Any) -> dict[str, Any]:
-    return {
-        "rotation_row_major": [float(value) for value in extrinsics.rotation],
-        "translation_m": [float(value) for value in extrinsics.translation],
-    }
-
-
 def _vector_stats(np: Any, samples: list[list[float]]) -> dict[str, Any]:
     array = np.asarray(samples, dtype=np.float64)
     norms = np.linalg.norm(array, axis=1)
@@ -56,35 +49,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration-s", type=float, default=10.0)
     parser.add_argument("--warmup-s", type=float, default=2.0)
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--accel-fps", type=int, default=100)
+    parser.add_argument("--gyro-fps", type=int, default=200)
     parser.add_argument("--output-dir", type=Path, default=Path("hardware_measurements"))
     args = parser.parse_args()
     if not math.isfinite(args.duration_s) or args.duration_s <= 0.0:
         parser.error("--duration-s must be positive and finite")
     if not math.isfinite(args.warmup_s) or args.warmup_s < 0.0:
         parser.error("--warmup-s must be finite and non-negative")
-    if min(args.width, args.height, args.fps) <= 0:
-        parser.error("--width, --height, and --fps must be positive")
+    if min(args.accel_fps, args.gyro_fps) <= 0:
+        parser.error("--accel-fps and --gyro-fps must be positive")
 
     np, rs = _require_runtime()
     pipeline, config = rs.pipeline(), rs.config()
-    config.enable_stream(rs.stream.color, args.width, args.height, rs.format.bgr8, args.fps)
-    # D435i firmware별로 가능한 motion rate 조합이 다르므로 특정 Hz를 강제하지
-    # 않는다. config가 device의 기본 accel/gyro profile을 선택하게 해야 RGB와
-    # 동시에 안정적으로 열 수 있다.
-    config.enable_stream(rs.stream.accel)
-    config.enable_stream(rs.stream.gyro)
+    # 이 장치가 보고한 지원 profile: accel 100/200/400 Hz, gyro 200/400 Hz.
+    # USB 2.x에서 RGB를 같이 열지 않아 motion stream timeout을 피한다.
+    config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, args.accel_fps)
+    config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, args.gyro_fps)
     profile = None
     try:
         profile = pipeline.start(config)
         device = profile.get_device()
-        color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
         accel_profile = profile.get_stream(rs.stream.accel).as_motion_stream_profile()
         gyro_profile = profile.get_stream(rs.stream.gyro).as_motion_stream_profile()
-        accel_to_color = accel_profile.get_extrinsics_to(color_profile)
-        gyro_to_color = gyro_profile.get_extrinsics_to(color_profile)
 
         warmup_deadline = time.monotonic() + args.warmup_s
         while time.monotonic() < warmup_deadline:
@@ -130,12 +117,13 @@ def main() -> int:
                 "serial": device.get_info(rs.camera_info.serial_number),
                 "firmware": device.get_info(rs.camera_info.firmware_version),
             },
-            "color_stream": {"width": args.width, "height": args.height, "fps": args.fps},
+            "stream_mode": "motion_only_usb2_compatible",
+            "color_stream": None,
             "accelerometer_stream_fps": int(accel_profile.fps()),
             "gyroscope_stream_fps": int(gyro_profile.fps()),
             "duration_s": args.duration_s,
-            "accel_to_color": _extrinsics_dict(accel_to_color),
-            "gyro_to_color": _extrinsics_dict(gyro_to_color),
+            "accel_to_color": None,
+            "gyro_to_color": None,
             "accelerometer_m_s2": _vector_stats(np, accel_samples),
             "gyroscope_rad_s": _vector_stats(np, gyro_samples),
             "duplicate_motion_frame_count": duplicate_motion_frame_count,
