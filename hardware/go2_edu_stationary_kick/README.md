@@ -46,6 +46,18 @@ camera→base extrinsic, LiDAR→base transform, timestamp source를 명시한�
 측정과 odometry로만 짧게 유지하고 stale/jump gate를 통과하지 못하면 kick을 금지한다.
 출처: [Intel D435i specifications](https://www.intel.com/content/www/us/en/products/sku/190004/intel-realsense-depth-camera-d435i/specifications.html).
 
+`pyrealsense2`가 project perception env에 준비된 뒤에는 ROS2 camera wrapper 없이도 아래
+read-only capture로 color-aligned depth, factory color intrinsics, depth scale과 frame 안정성을
+기록한다. `last_aligned_rgbd.npz`에는 마지막 aligned color/depth pair만 저장한다. 이 단계는
+공/Tag 추론이나 robot command를 전혀 수행하지 않는다.
+
+```bash
+python hardware/go2_edu_stationary_kick/capture_d435i_rgbd.py --duration-s 10
+```
+
+출력 `metadata.json`의 `camera_to_base_extrinsic`은 의도적으로 `null`이다. 카메라 mount의
+실측 rigid transform을 얻기 전에는 base-frame ball/Tag 좌표나 접근 command를 만들지 않는다.
+
 ## artifact와 attestation
 
 실제 PC에 이 저장소를 복사한 뒤 artifact를 생성한다.
