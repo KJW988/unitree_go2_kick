@@ -158,31 +158,25 @@ handoff 중 지지 토크를 0으로 낮추면 `StandDown` 뒤 robot이 주저�
 release 전부터 operator가 지정한 full `Kp/Kd` standing target을 계속 송신하고,
 `--handoff-blend-s`로 actual `release_q`에서 standing baseline target만 연결한다.
 
-명령이 끝나면 LowCmd stream도 종료되어 harness robot은 다시 힘이 빠질 수 있다. 관찰이나
-manual handback 전에 baseline을 유지하려면 `--hold-after-s 30`처럼 추가 hold 시간을 준다.
-
-MotionSwitcher가 반환한 owner name은 firmware별로 `SelectMode()` 가능한 alias와 다를 수
-있다. 기본 handback은 하지 않는다. 먼저 아래 read-only query로 controller mode를 확인하고
-확정된 alias가 있을 때만 `--handback-mode ALIAS`를 준다.
-
-```bash
-python3 hardware/go2_edu_stationary_kick/query_motion_switcher.py --interface eth0
-```
-
-Go2의 공식 MotionSwitcher 예제는 mode alias로 `normal`, `ai`, `advanced`를 사용한다.
-persistent kick session의 controller 우선권을 구현하기 전에는 아래 probe로 해당 EDU
-firmware에서 alias 하나의 reacquire가 성공하는지 확인한다. 이 probe는 LowCmd와 Sport
-motion 명령을 만들지 않지만 mode selection은 수행하므로 robot이 정상 standing이고 clear
-zone인 상태에서만 쓴다. 자동 후보 순회는 하지 않는다.
+명령이 단순 종료하면 LowCmd stream도 종료되어 harness robot은 다시 힘이 빠질 수 있다.
+컨트롤러로 안전하게 돌려줄 때는 `--handback-mcf`를 사용한다. 이 EDU firmware에서 확인한
+경로는 LowCmd stream을 **계속 유지한 채** `RobotStateClient.ServiceSwitch("mcf", True)`를
+호출하고, service `mcf=0` 및 MotionSwitcher owner=`mcf`를 모두 확인한 다음에만 stream을
+종료한다. 따라서 `--hold-after-s` 끝에서 robot이 먼저 주저앉지 않는다.
 
 ```bash
-python3 hardware/go2_edu_stationary_kick/probe_motion_switcher_alias.py \
-  --interface eth0 --mode ai --execute \
-  --operator-confirm SELECT_MODE_READY
+python3 hardware/go2_edu_stationary_kick/live_baseline_fr_preset.py \
+  --interface eth0 --trajectory hardware_measurements/go2_fr_kick_teacher_x10.npz \
+  --kp 60 --kd 5 --execute --release-motion-owner \
+  --release-without-stand-down --handoff-blend-s 1.2 --prehold-s 1 \
+  --hold-only --hold-only-s 3 --hold-after-s 20 --handback-mcf \
+  --operator-confirm HARNESS_ESTOP_READY
 ```
 
-`select_status=0`, `after.name`이 비어 있지 않으면 controller-mode reacquire 후보가
-확인된 것이다. 출처: [Unitree MotionSwitcher Python example](https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/example/motionSwitcher/motion_switcher_example.py), [Unitree Go2 C++ stand example](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp).
+정상 종료 전에 `MCF_HANDBACK_READY service_status=0 motion_owner='mcf'`가 출력되어야 한다.
+그 뒤 physical controller가 바로 제어를 가져가야 한다. 출력되지 않고 실패하면 자동으로
+LowCmd를 끄는 상태 전환을 신뢰하면 안 되므로, 하네스/E-stop으로 안전을 유지하고 log를
+확인한다. 출처: [Unitree RobotStateClient](https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/unitree_sdk2py/go2/robot_state/robot_state_client.py), [Unitree Go2 C++ stand example](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp).
 
 `--preset-time-scale 0.70`은 frozen FR preset의 관절 path를 바꾸지 않고 전체 시간을 70%로
 줄인다. `0.20`은 5배 속도다. handoff tracking이 안정된 harness run에서만 점진적으로 올린다.

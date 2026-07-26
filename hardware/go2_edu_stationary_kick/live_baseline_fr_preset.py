@@ -209,24 +209,48 @@ def _release_motion_owner(*, without_stand_down: bool) -> None:
     raise RuntimeError("motion owner release failed: {}".format(result.get("name", "")))
 
 
-def _handback_motion_owner(mode: str) -> None:
-    """LowCmd 종료 뒤 Unitree MotionSwitcher의 controller mode를 다시 선택한다."""
-    from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+def _handback_mcf_while_streaming() -> None:
+    """Full-gain LowCmd hold 중 MCF를 먼저 복구하고 소유권을 확인한다.
 
+    출처: Unitree SDK2 Python RobotStateClient.ServiceSwitch API
+    https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/unitree_sdk2py/go2/robot_state/robot_state_client.py
+    이 EDU firmware에서는 ReleaseMode 뒤 ``mcf`` service가 status=1이 된다. LowCmd를
+    먼저 끄면 지지 토크가 사라지므로, service를 재기동하고 MotionSwitcher owner가 mcf로
+    확인된 경우에만 caller가 LowCmd stream을 종료한다.
+    """
+    from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+    from unitree_sdk2py.go2.robot_state.robot_state_client import RobotStateClient
+
+    state_client = RobotStateClient()
+    state_client.SetTimeout(2.0)
+    state_client.Init()
     switcher = MotionSwitcherClient()
     switcher.SetTimeout(2.0)
     switcher.Init()
-    status, _ = switcher.SelectMode(mode)
-    if status != 0:
-        raise RuntimeError("controller handback SelectMode({!r}) failed status={}".format(mode, status))
-    deadline = time.monotonic() + 2.0
+
+    start_code = state_client.ServiceSwitch("mcf", True)
+    if start_code != 0:
+        raise RuntimeError("RobotStateClient.ServiceSwitch('mcf', True) failed code={}".format(start_code))
+
+    deadline = time.monotonic() + 3.0
+    last_mcf_status: Optional[int] = None
+    last_owner = ""
     while time.monotonic() < deadline:
-        status, result = switcher.CheckMode()
-        if status == 0 and result.get("name", "") == mode:
-            print("CONTROLLER_HANDBACK_READY mode={}".format(mode), flush=True)
+        list_code, services = state_client.ServiceList()
+        if list_code == 0 and services is not None:
+            statuses = {service.name: service.status for service in services}
+            last_mcf_status = statuses.get("mcf")
+        owner_code, owner_result = switcher.CheckMode()
+        last_owner = "" if owner_result is None else owner_result.get("name", "")
+        if list_code == 0 and last_mcf_status == 0 and owner_code == 0 and last_owner == "mcf":
+            print("MCF_HANDBACK_READY service_status=0 motion_owner='mcf'", flush=True)
             return
         time.sleep(0.05)
-    raise RuntimeError("controller handback did not acquire mode {!r}".format(mode))
+    raise RuntimeError(
+        "MCF handback not confirmed while LowCmd is still holding: mcf_status={!r} owner={!r}".format(
+            last_mcf_status, last_owner
+        )
+    )
 
 
 def main() -> int:
@@ -246,7 +270,11 @@ def main() -> int:
     parser.add_argument("--preset-time-scale", type=float, default=1.0, help="1보다 작으면 preset을 더 빠르게 재생")
     parser.add_argument("--fr-swing-scale", type=float, default=1.0, help="kick phase FR thigh/calf delta scale; 1.15는 15%% extension")
     parser.add_argument("--handoff-blend-s", type=float, default=0.4, help="release 직후 actual q에서 baseline으로 연결하는 minimum-jerk 시간")
-    parser.add_argument("--handback-mode", default="", help="검증 후에만 지정하는 controller MotionSwitcher mode")
+    parser.add_argument(
+        "--handback-mcf",
+        action="store_true",
+        help="LowCmd hold 중 RobotStateClient로 mcf를 복구·확인한 뒤에만 stream을 종료",
+    )
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
@@ -265,6 +293,8 @@ def main() -> int:
         parser.error("--release-motion-owner requires --execute")
     if args.release_without_stand_down and not args.release_motion_owner:
         parser.error("--release-without-stand-down requires --release-motion-owner")
+    if args.handback_mcf and not args.release_motion_owner:
+        parser.error("--handback-mcf requires --release-motion-owner")
 
     teacher = load_trajectory(args.trajectory)
     errors = validate_artifact(teacher)
@@ -304,7 +334,7 @@ def main() -> int:
         "preset_time_scale": args.preset_time_scale,
         "fr_swing_scale": args.fr_swing_scale,
         "handoff_blend_s": args.handoff_blend_s,
-        "handback_mode": args.handback_mode,
+        "handback_mcf": args.handback_mcf,
         "execute": args.execute,
         "records": [],
     }
@@ -370,13 +400,14 @@ def main() -> int:
                     q, dq, rpy = _read_state(state)
                     summary["records"].append({"t_s": now - start, "gain_scale": 1.0, "target_sdk_q_rad": baseline.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
                 time.sleep(1.0 / CONTROL_HZ)
+        if args.handback_mcf:
+            # 반드시 full-gain baseline stream이 살아 있는 상태에서 MCF를 먼저 복구한다.
+            _handback_mcf_while_streaming()
     finally:
         streamer.stop()
     path = args.log_dir / ("live_baseline_fr_preset_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
     _write_log(path, summary)
     print("PRESET_COMPLETE log={}".format(path), flush=True)
-    if args.handback_mode:
-        _handback_motion_owner(args.handback_mode)
     return 0
 
 
