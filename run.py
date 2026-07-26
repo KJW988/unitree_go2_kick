@@ -52,8 +52,8 @@ def _enter_isolated_ros_environment() -> None:
         "source /opt/ros/foxy/setup.bash",
         'source "$GO2_LIDAR_SETUP"',
         "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp",
-        "export ROS_LOCALHOST_ONLY=1",
-        "unset CYCLONEDDS_URI",
+        "export ROS_LOCALHOST_ONLY=0",
+        "export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>lo</NetworkInterfaceAddress></General></Domain></CycloneDDS>'",
         'exec /usr/bin/python3 "$GO2_LIDAR_RUNNER" --ros-ready',
     ))
     os.execvpe(

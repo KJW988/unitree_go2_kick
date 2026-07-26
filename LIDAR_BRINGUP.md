@@ -48,7 +48,7 @@ bag 검증이 완료된 뒤에만 개인 XML을 `Interfaces/NetworkInterface nam
 
 ## off-line bag 명령
 
-Foxy 설치에 `rosbag2_py`가 없으면, 아래 두 터미널 방식으로 bag을 loopback에서만 재생·분석한다. 두 터미널은 반드시 `ROS_LOCALHOST_ONLY=1`과 `unset CYCLONEDDS_URI`를 적용한다. 따라서 재생기와 분석기만 서로 발견하며 실제 Go2 DDS에는 연결되지 않는다.
+Foxy 설치에 `rosbag2_py`가 없으면, 아래 두 터미널 방식으로 bag을 loopback에서만 재생·분석한다. 두 터미널은 반드시 `ROS_LOCALHOST_ONLY=0`과 loopback `lo` 전용 `CYCLONEDDS_URI`를 적용한다. 따라서 재생기와 분석기만 서로 발견하며 실제 Go2 DDS에는 연결되지 않는다.
 
 두 터미널 공통:
 
@@ -59,8 +59,8 @@ env -i HOME="$HOME" USER="$USER" TERM="$TERM" \
 source /opt/ros/foxy/setup.bash
 source "$HOME/Desktop/Jiwon/go2_lidar_ros2_ws/unitree_ros2/cyclonedds_ws/install/setup.bash"
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export ROS_LOCALHOST_ONLY=1
-unset CYCLONEDDS_URI
+export ROS_LOCALHOST_ONLY=0
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>lo</NetworkInterfaceAddress></General></Domain></CycloneDDS>'
 cd "$HOME/Desktop/Jiwon/soccer/unitree_go2_kick"
 ```
 
@@ -106,8 +106,7 @@ python3 scripts/analyze_lidar_ball_bag_ros2.py \
 python3 run.py
 ```
 
-`run.py`는 Foxy와 개인 DDS workspace를 자동으로 source한 뒤, `ROS_LOCALHOST_ONLY=1`로
-고정된 localhost에서 bag을 순서대로 재생·분석한다. 실제 Go2 DDS, motion, motor, policy에는
+`run.py`는 Foxy와 개인 DDS workspace를 자동으로 source한 뒤, `NetworkInterfaceAddress=lo`로 고정된 localhost에서 bag을 순서대로 재생·분석한다. 실제 Go2 DDS, motion, motor, policy에는
 접근하지 않는다. 결과는 `~/Desktop/Jiwon/lidar_bags/ball_1m_analysis.json` 및
 `empty_analysis.json`에 저장된다. 경로가 다르면 `GO2_LIDAR_SETUP` 또는
 `GO2_LIDAR_BAG_ROOT` 환경변수로만 바꿀 수 있다.

@@ -2,7 +2,7 @@
 """ROS2 PointCloud2를 구독해 검증 전용 LiDAR 공 후보 통계를 저장한다.
 
 이 노드는 publisher, service, action, robot-control API를 만들지 않는다. 기본 사용은
-`ROS_LOCALHOST_ONLY=1`에서 `ros2 bag play`와 함께 하는 오프라인 분석이다.
+`NetworkInterfaceAddress=lo`로 고정한 localhost DDS에서 `ros2 bag play`와 함께 하는 오프라인 분석이다.
 """
 
 import argparse
