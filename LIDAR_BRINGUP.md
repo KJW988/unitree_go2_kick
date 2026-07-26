@@ -112,3 +112,7 @@ python3 run.py
 `GO2_LIDAR_BAG_ROOT` 환경변수로만 바꿀 수 있다.
 
 `run.py`가 생성하는 JSON에는 point field와 sampled ROI/ground/cluster/sphere-fit 단계 통계도 포함된다. 실공 미검출 시 이 통계를 사용해 탈락 단계를 재설계하며, 검증 전에는 킥 입력으로 연결하지 않는다.
+
+## 실공 bag 재설계 상태
+
+단일-frame sphere-fit은 완전한 ball/empty bag에서 ball recall 0/603, empty false positive 0/805로 실패했다. 정지 로봇에서는 65 ms 단위의 희소 반사점을 12 frame non-overlapping base-frame window로 누적하고, self-leg 영역을 제외한 1 m 전방 lane에서만 sphere-fit하는 validation profile을 사용한다. 이는 다음 bag 결과로 recall·false positive·위치 오차를 다시 판정하기 위한 실험용 설정이며, runtime ball search나 kick interface에는 아직 연결하지 않는다.

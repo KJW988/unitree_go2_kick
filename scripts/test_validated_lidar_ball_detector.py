@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from dribblebot.perception.temporal_lidar_ball_detector import StaticTemporalBallDetector
 from dribblebot.perception.validated_lidar_ball_detector import (
     LidarBallDetectorConfig,
     StaleDetectionGate,
@@ -69,6 +70,23 @@ class ValidatedLidarBallDetectorTest(unittest.TestCase):
     def test_non_base_frame_requires_measured_transform(self):
         with self.assertRaisesRegex(ValueError, "no measured sensor_to_base"):
             self.detector.detect(np.zeros((8, 3)), frame_id="utlidar_lidar")
+
+    def test_static_temporal_window_recovers_sparse_ball_surface(self):
+        rng = np.random.default_rng(121)
+        truth = np.array((1.00, 0.05, -0.21))
+        temporal = StaticTemporalBallDetector(window_frames=12)
+        evaluation = None
+        for frame in range(12):
+            sparse_surface = _ball(rng, truth, count=28)[:16]
+            evaluation = temporal.update(
+                np.vstack((_ground(rng, count=220), sparse_surface)),
+                frame_id="base_link", stamp_s=float(frame),
+            )
+        self.assertIsNotNone(evaluation)
+        assert evaluation is not None
+        self.assertIsNotNone(evaluation.detection)
+        assert evaluation.detection is not None
+        np.testing.assert_allclose(evaluation.detection.center_base_xyz, truth, atol=0.025)
 
     def test_stale_gate_fails_closed(self):
         rng = np.random.default_rng(8)

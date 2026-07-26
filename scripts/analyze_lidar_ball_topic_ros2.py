@@ -21,9 +21,9 @@ import numpy as np
 
 from dribblebot.perception.lidar_ball_diagnostics import diagnose_lidar_frame
 from dribblebot.perception.pointcloud2 import pointcloud2_to_xyz
-from dribblebot.perception.validated_lidar_ball_detector import (
-    LidarBallDetectorConfig,
-    ValidatedLidarBallDetector,
+from dribblebot.perception.temporal_lidar_ball_detector import (
+    StaticTemporalBallDetector,
+    make_static_ball_validation_detector,
 )
 
 
@@ -37,9 +37,10 @@ class TopicAnalyzer:
     def __init__(self, node, topic: str):
         from sensor_msgs.msg import PointCloud2
 
-        self.detector = ValidatedLidarBallDetector(
-            LidarBallDetectorConfig(expected_frame_id="base_link")
-        )
+        self.detector = make_static_ball_validation_detector()
+        self.temporal_detector = StaticTemporalBallDetector(self.detector, window_frames=12)
+        self.evaluated_windows = 0
+        self.temporal_window_sources: List[int] = []
         self.stamps: List[float] = []
         self.point_counts: List[int] = []
         self.frame_ids = set()
@@ -65,14 +66,19 @@ class TopicAnalyzer:
                     "datatype": int(field.datatype), "count": int(field.count),
                 } for field in message.fields]
             frame_index = len(self.stamps)
-            if frame_index == 1 or frame_index % 75 == 0:
+            if frame_index == 1 or frame_index % 300 == 0:
                 diagnostic = diagnose_lidar_frame(self.detector, points, message.header.frame_id)
                 diagnostic["frame_index"] = frame_index
                 diagnostic["stamp_s"] = stamp
                 self.diagnostic_samples.append(diagnostic)
-            result = self.detector.detect(
+            evaluation = self.temporal_detector.update(
                 points, frame_id=message.header.frame_id, stamp_s=stamp,
             )
+            if evaluation is None:
+                return
+            self.evaluated_windows += 1
+            self.temporal_window_sources.append(evaluation.source_points)
+            result = evaluation.detection
             if result is not None:
                 self.detections.append({
                     "stamp_s": result.stamp_s,
@@ -99,8 +105,16 @@ class TopicAnalyzer:
             "frame_ids": sorted(self.frame_ids),
             "point_field_layout": self.point_field_layout,
             "frames": frames,
+            "temporal_window_frames": self.temporal_detector.window_frames,
+            "evaluated_windows": self.evaluated_windows,
+            "temporal_source_points_median": (
+                float(median(self.temporal_window_sources)) if self.temporal_window_sources else 0.0
+            ),
             "detections": len(self.detections),
-            "detection_rate": float(len(self.detections) / frames) if frames else 0.0,
+            "detection_rate": (
+                float(len(self.detections) / self.evaluated_windows)
+                if self.evaluated_windows else 0.0
+            ),
             "point_count_median": float(median(self.point_counts)) if self.point_counts else 0.0,
             "point_count_min": min(self.point_counts) if self.point_counts else 0,
             "point_count_max": max(self.point_counts) if self.point_counts else 0,
