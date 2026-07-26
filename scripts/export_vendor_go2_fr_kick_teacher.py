@@ -41,7 +41,10 @@ def minimum_jerk(value: float) -> float:
     return value ** 3 * (10.0 - 15.0 * value + 6.0 * value ** 2)
 
 
-def source_sha256(path: Path) -> str:
+def source_sha256(path: Path) -> str | None:
+    """원본 evaluator가 bundle에 없을 때도 self-contained exporter를 막지 않는다."""
+    if not path.is_file():
+        return None
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -112,7 +115,8 @@ def main() -> None:
     metadata = {
         "schema_version": 1, "artifact_kind": "offline_go2_fr_kick_teacher", "hardware_io": "none",
         "sample_hz": SAMPLE_HZ, "duration_s": args.duration_s,
-        "teacher_source": str(TEACHER_SOURCE.relative_to(ROOT)), "teacher_source_sha256": source_sha256(TEACHER_SOURCE),
+        "teacher_source": str(TEACHER_SOURCE.relative_to(ROOT)) if TEACHER_SOURCE.is_file() else "embedded_exporter",
+        "teacher_source_sha256": source_sha256(TEACHER_SOURCE),
         "canonical_dof_names": list(CANONICAL_DOF_NAMES), "canonical_to_sdk_motor_index": list(CANONICAL_TO_SDK_MOTOR_INDEX),
         "sim_default_dof_pos_rad": DEFAULT_Q.tolist(), "phases_s": list(PHASES),
         "units": {"position": "rad", "planned_finite_difference_velocity": "rad/s"},
