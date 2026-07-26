@@ -109,3 +109,21 @@ python3 hardware/go2_edu_stationary_kick/run.py \
 실행 중 anomaly, support loss, unexpected motion이 보이면 software abort에 의존하지 말고
 즉시 E-stop을 사용한다. 이 runner는 low-level ownership/firmware timeout/zero-torque
 recovery를 임의로 변경하지 않는다.
+
+## Harness live-baseline FR preset deploy
+
+정지 harness에서 이미 학습·검증한 FR preset의 joint delta를 그대로 재생하면서 매 tick의
+target/실제 joint state/IMU를 JSON으로 기록하는 별도 runner다. simulator default pose를
+실물에 보내지 않고, 매 실행 시 4초간 읽은 standing median을 시작점으로 쓴다. 보행·공·Tag
+입력은 하지 않는다. `--execute` 전 preview는 LowCmd publisher를 만들지 않는다.
+
+```bash
+python3 hardware/go2_edu_stationary_kick/live_baseline_fr_preset.py \
+  --interface eth0 \
+  --trajectory /path/to/go2_fr_kick_teacher.npz \
+  --kp YOUR_TUNING_VALUE --kd YOUR_TUNING_VALUE
+```
+
+Harnes/E-stop/no-ball/low-level ownership이 모두 준비된 뒤에만 `--execute
+--operator-confirm HARNESS_ESTOP_READY`를 추가한다. 이 runner는 gain을 숨겨진 default로
+정하지 않는다. operator가 입력한 값을 그대로 log에 기록해 다음 tuning의 근거로 쓴다.
