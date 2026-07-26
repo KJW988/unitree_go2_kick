@@ -138,6 +138,21 @@ robot이 주저앉아 baseline이 사라지므로 사용하지 않는다.
 handoff만 먼저 확인한다. 이 단계에서 robot이 자세를 유지하고 log의 joint tracking이
 작아야만 `--hold-only`를 빼고 FR preset을 실행한다.
 
+handoff 때 본체가 떨리면 target blend만 길게 해서는 충분하지 않다. runner는 release
+직후 실제 `release_q`를 hold한 채 `--gain-ramp-s` 동안 LowCmd `Kp/Kd`를 0에서 지정값까지
+minimum-jerk로 올리고, 그 뒤에만 `--handoff-blend-s`로 standing baseline에 정렬한다.
+기본값은 각각 `1.0 s`, `0.4 s`다. trajectory를 실행하기 전 다음 무공 handoff-only 명령으로
+먼저 확인한다.
+
+```bash
+python3 hardware/go2_edu_stationary_kick/live_baseline_fr_preset.py \
+  --interface eth0 --trajectory hardware_measurements/go2_fr_kick_teacher_x10.npz \
+  --kp 60 --kd 5 --execute --release-motion-owner \
+  --gain-ramp-s 1.0 --handoff-blend-s 0.4 --prehold-s 1 \
+  --hold-only --hold-only-s 3 --hold-after-s 20 \
+  --operator-confirm HARNESS_ESTOP_READY
+```
+
 명령이 끝나면 LowCmd stream도 종료되어 harness robot은 다시 힘이 빠질 수 있다. 관찰이나
 manual handback 전에 baseline을 유지하려면 `--hold-after-s 30`처럼 추가 hold 시간을 준다.
 

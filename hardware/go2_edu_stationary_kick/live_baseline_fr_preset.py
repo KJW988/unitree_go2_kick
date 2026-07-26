@@ -106,21 +106,27 @@ def _make_command(command_type: Any) -> Any:
 
 
 class CommandStreamer:
-    """Ownership handoff 중에도 baseline hold LowCmd를 끊지 않고 보낸다."""
+    """Ownership handoff 중에도 target과 gain을 원자적으로 갱신해 LowCmd를 유지한다."""
 
     def __init__(self, publisher: Any, command_type: Any, crc_type: Any, target: np.ndarray, kp: float, kd: float) -> None:
         self._publisher = publisher
         self._command = _make_command(command_type)
         self._crc = crc_type()
         self._target = target.copy()
-        self._kp, self._kd = kp, kd
+        # Release 전에는 Sport/MCF가 LowCmd를 무시한다. Release 직후 torque step을
+        # 피하려면 main loop가 gain-ramp를 명시적으로 올릴 때까지 0을 유지한다.
+        self._kp, self._kd = 0.0, 0.0
+        self._max_kp, self._max_kd = kp, kd
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="go2-lowcmd-stream", daemon=True)
 
-    def set_target(self, target: np.ndarray) -> None:
+    def set_command(self, target: np.ndarray, kp_scale: float) -> None:
+        """target과 bounded PD gain을 같은 tick snapshot으로 바꾼다."""
+        kp_scale = min(1.0, max(0.0, kp_scale))
         with self._lock:
             self._target = target.copy()
+            self._kp, self._kd = self._max_kp * kp_scale, self._max_kd * kp_scale
 
     def start(self) -> None:
         self._thread.start()
@@ -226,7 +232,8 @@ def main() -> int:
     parser.add_argument("--hold-only-s", type=float, default=3.0, help="--hold-only 유지 시간")
     parser.add_argument("--hold-after-s", type=float, default=0.0, help="preset/hold 뒤 baseline을 추가 유지할 시간; 0이면 즉시 종료")
     parser.add_argument("--preset-time-scale", type=float, default=1.0, help="1보다 작으면 preset을 더 빠르게 재생")
-    parser.add_argument("--fr-swing-scale", type=float, default=1.0, help="kick phase FR thigh/calf delta scale; 1.15는 15% extension")
+    parser.add_argument("--fr-swing-scale", type=float, default=1.0, help="kick phase FR thigh/calf delta scale; 1.15는 15%% extension")
+    parser.add_argument("--gain-ramp-s", type=float, default=1.0, help="release_q hold 중 LowCmd PD gain을 0에서 지정 gain까지 올리는 시간")
     parser.add_argument("--handoff-blend-s", type=float, default=0.4, help="release 직후 actual q에서 baseline으로 연결하는 minimum-jerk 시간")
     parser.add_argument("--handback-mode", default="", help="검증 후에만 지정하는 controller MotionSwitcher mode")
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
@@ -239,8 +246,8 @@ def main() -> int:
         parser.error("--hold-after-s must be finite and non-negative")
     if not math.isfinite(args.preset_time_scale) or not 0.2 <= args.preset_time_scale <= 2.0:
         parser.error("--preset-time-scale must be between 0.2 and 2.0")
-    if not math.isfinite(args.handoff_blend_s) or args.handoff_blend_s <= 0.0:
-        parser.error("--handoff-blend-s must be positive and finite")
+    if not all(math.isfinite(value) and value > 0.0 for value in (args.gain_ramp_s, args.handoff_blend_s)):
+        parser.error("--gain-ramp-s and --handoff-blend-s must be positive and finite")
     if not math.isfinite(args.fr_swing_scale) or not 0.8 <= args.fr_swing_scale <= 1.3:
         parser.error("--fr-swing-scale must be between 0.8 and 1.3")
     if args.release_motion_owner and not args.execute:
@@ -282,6 +289,7 @@ def main() -> int:
         "hold_after_s": args.hold_after_s,
         "preset_time_scale": args.preset_time_scale,
         "fr_swing_scale": args.fr_swing_scale,
+        "gain_ramp_s": args.gain_ramp_s,
         "handoff_blend_s": args.handoff_blend_s,
         "handback_mode": args.handback_mode,
         "execute": args.execute,
@@ -312,23 +320,32 @@ def main() -> int:
             streamer.stop()
             raise RuntimeError("release 직후 fresh rt/lowstate를 받지 못했습니다")
         release_q, _, _ = _read_state(message)
+        summary["release_sdk_q_rad"] = release_q.tolist()
     start = time.monotonic()
     motion_s = args.hold_only_s if args.hold_only else args.preset_time_scale * float(teacher["time_s"][-1])
-    end_s, next_tick = args.handoff_blend_s + args.prehold_s + motion_s, time.monotonic()
-    print("LOWCMD_ACTIVE frozen_FR_preset={} hold_only={} handoff_blend_s={} prehold_s={}".format(not args.hold_only, args.hold_only, args.handoff_blend_s, args.prehold_s), flush=True)
+    handoff_s = args.gain_ramp_s + args.handoff_blend_s
+    end_s, next_tick = handoff_s + args.prehold_s + motion_s, time.monotonic()
+    print("LOWCMD_ACTIVE frozen_FR_preset={} hold_only={} gain_ramp_s={} handoff_blend_s={} prehold_s={}".format(not args.hold_only, args.hold_only, args.gain_ramp_s, args.handoff_blend_s, args.prehold_s), flush=True)
     try:
         while True:
             now, elapsed = time.monotonic(), time.monotonic() - start
-            if elapsed < args.handoff_blend_s:
-                desired = release_q + _minimum_jerk(elapsed / args.handoff_blend_s) * (baseline - release_q)
+            if elapsed < args.gain_ramp_s:
+                # 먼저 release 시점의 실제 관절각을 hold하며 torque를 부드럽게 인계한다.
+                desired = release_q
+                gain_scale = _minimum_jerk(elapsed / args.gain_ramp_s)
+            elif elapsed < handoff_s:
+                # full gain 뒤에만 live standing baseline으로 관절 target을 정렬한다.
+                desired = release_q + _minimum_jerk((elapsed - args.gain_ramp_s) / args.handoff_blend_s) * (baseline - release_q)
+                gain_scale = 1.0
             else:
-                teacher_elapsed = max(0.0, elapsed - args.handoff_blend_s - args.prehold_s) / args.preset_time_scale
+                teacher_elapsed = max(0.0, elapsed - handoff_s - args.prehold_s) / args.preset_time_scale
                 desired = baseline if args.hold_only else _interpolate(teacher_elapsed, teacher["time_s"], target)
-            streamer.set_target(desired)
+                gain_scale = 1.0
+            streamer.set_command(desired, gain_scale)
             state, stamp = buffer.latest()
             if state is not None and now - stamp < 0.25:
                 q, dq, rpy = _read_state(state)
-                summary["records"].append({"t_s": elapsed, "target_sdk_q_rad": desired.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
+                summary["records"].append({"t_s": elapsed, "gain_scale": gain_scale, "target_sdk_q_rad": desired.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
             if elapsed >= end_s:
                 break
             next_tick += 1.0 / CONTROL_HZ
@@ -338,11 +355,11 @@ def main() -> int:
             deadline = time.monotonic() + args.hold_after_s
             while time.monotonic() < deadline:
                 now = time.monotonic()
-                streamer.set_target(baseline)
+                streamer.set_command(baseline, 1.0)
                 state, stamp = buffer.latest()
                 if state is not None and now - stamp < 0.25:
                     q, dq, rpy = _read_state(state)
-                    summary["records"].append({"t_s": now - start, "target_sdk_q_rad": baseline.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
+                    summary["records"].append({"t_s": now - start, "gain_scale": 1.0, "target_sdk_q_rad": baseline.tolist(), "q_sdk_q_rad": q.tolist(), "dq_sdk_rad_s": dq.tolist(), "rpy_rad": rpy.tolist()})
                 time.sleep(1.0 / CONTROL_HZ)
     finally:
         streamer.stop()
