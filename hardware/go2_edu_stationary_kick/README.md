@@ -138,6 +138,22 @@ robot이 주저앉아 baseline이 사라지므로 사용하지 않는다.
 handoff만 먼저 확인한다. 이 단계에서 robot이 자세를 유지하고 log의 joint tracking이
 작아야만 `--hold-only`를 빼고 FR preset을 실행한다.
 
+기본 경로는 `StandDown` 뒤 `ReleaseMode`다. 반면 Unitree의 공식 C++ Go2 stand example은
+`StandDown` 없이 `ReleaseMode`만 호출한다. 이 direct 경로는 앉음/떨림을 줄일 후보지만,
+공식 예제도 harness 또는 지면 조건을 요구한다. 따라서 아래처럼 explicit opt-in과 무공
+`--hold-only`에서만 먼저 검증한다. 성공하기 전에는 킥에 쓰지 않는다.
+
+```bash
+python3 hardware/go2_edu_stationary_kick/live_baseline_fr_preset.py \
+  --interface eth0 --trajectory hardware_measurements/go2_fr_kick_teacher_x10.npz \
+  --kp 60 --kd 5 --execute --release-motion-owner \
+  --release-without-stand-down --handoff-blend-s 1.2 --prehold-s 1 \
+  --hold-only --hold-only-s 3 --hold-after-s 20 \
+  --operator-confirm HARNESS_ESTOP_READY
+```
+
+출처: [Unitree SDK2 Go2 C++ stand example](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp).
+
 handoff 중 지지 토크를 0으로 낮추면 `StandDown` 뒤 robot이 주저앉을 수 있다. runner는
 release 전부터 operator가 지정한 full `Kp/Kd` standing target을 계속 송신하고,
 `--handoff-blend-s`로 actual `release_q`에서 standing baseline target만 연결한다.

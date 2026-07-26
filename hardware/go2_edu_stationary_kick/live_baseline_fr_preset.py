@@ -170,14 +170,9 @@ def _write_log(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _release_motion_owner() -> None:
+def _release_motion_owner(*, without_stand_down: bool) -> None:
     """이미 실행 중인 baseline stream을 유지한 채 공식 ownership을 넘긴다."""
     from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
-    from unitree_sdk2py.go2.sport.sport_client import SportClient
-
-    sport = SportClient()
-    sport.SetTimeout(2.0)
-    sport.Init()
     switcher = MotionSwitcherClient()
     switcher.SetTimeout(2.0)
     switcher.Init()
@@ -186,10 +181,23 @@ def _release_motion_owner() -> None:
     print("MOTION_OWNER_BEFORE_RELEASE={!r} status={}".format(owner, status), flush=True)
     if not owner:
         return
-    # Unitree example also uses StandDown before ReleaseMode. Harness에서만 허용한다.
-    sport.StandDown()
-    switcher.ReleaseMode()
-    for _ in range(10):
+    if without_stand_down:
+        # 출처: Unitree SDK2 C++ Go2 stand example
+        # https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp
+        # 해당 공식 예제는 StandDown 없이 ReleaseMode만 호출한다. 이 opt-in 경로는
+        # full-gain baseline LowCmd stream이 이미 실행 중인 harness hold-only 검증용이다.
+        print("MOTION_RELEASE_PATH=direct_release_only", flush=True)
+    else:
+        from unitree_sdk2py.go2.sport.sport_client import SportClient
+        sport = SportClient()
+        sport.SetTimeout(2.0)
+        sport.Init()
+        sport.StandDown()
+        print("MOTION_RELEASE_PATH=stand_down_then_release", flush=True)
+    release_status = switcher.ReleaseMode()
+    if release_status != 0:
+        raise RuntimeError("MotionSwitcher.ReleaseMode failed status={}".format(release_status))
+    for _ in range(100):
         status, result = switcher.CheckMode()
         if not result.get("name", ""):
             print("LOW_LEVEL_OWNERSHIP_READY", flush=True)
@@ -227,6 +235,7 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true", help="없으면 capture/target preview만 수행")
     parser.add_argument("--operator-confirm", help="execute에는 {} 필요".format(CONFIRMATION))
     parser.add_argument("--release-motion-owner", action="store_true", help="capture 뒤 공식 Sport/MCF ownership을 해제하고 즉시 hold")
+    parser.add_argument("--release-without-stand-down", action="store_true", help="official C++ direct ReleaseMode 경로; harness hold-only 검증에서만 사용")
     parser.add_argument("--prehold-s", type=float, default=1.0, help="release 뒤 baseline hold 시간")
     parser.add_argument("--hold-only", action="store_true", help="FR preset 대신 captured standing baseline만 유지")
     parser.add_argument("--hold-only-s", type=float, default=3.0, help="--hold-only 유지 시간")
@@ -251,6 +260,8 @@ def main() -> int:
         parser.error("--fr-swing-scale must be between 0.8 and 1.3")
     if args.release_motion_owner and not args.execute:
         parser.error("--release-motion-owner requires --execute")
+    if args.release_without_stand_down and not args.release_motion_owner:
+        parser.error("--release-without-stand-down requires --release-motion-owner")
 
     teacher = load_trajectory(args.trajectory)
     errors = validate_artifact(teacher)
@@ -282,6 +293,7 @@ def main() -> int:
         "kp": args.kp,
         "kd": args.kd,
         "release_motion_owner": args.release_motion_owner,
+        "release_without_stand_down": args.release_without_stand_down,
         "prehold_s": args.prehold_s,
         "hold_only": args.hold_only,
         "hold_only_s": args.hold_only_s,
@@ -312,7 +324,7 @@ def main() -> int:
     streamer.start()
     release_q = baseline.copy()
     if args.release_motion_owner:
-        _release_motion_owner()
+        _release_motion_owner(without_stand_down=args.release_without_stand_down)
         message, stamp = buffer.latest()
         if message is None or time.monotonic() - stamp >= 0.25:
             streamer.stop()
