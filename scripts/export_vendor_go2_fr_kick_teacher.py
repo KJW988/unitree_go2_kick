@@ -52,8 +52,12 @@ def source_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def offsets_at(elapsed_s: float) -> np.ndarray:
-    """teacher의 기본 환경변수 preset과 같은 순수 NumPy 관절 offset을 반환한다."""
+def offsets_at(elapsed_s: float, *, fr_forward_extension_m: float = 0.0) -> np.ndarray:
+    """teacher의 기본 환경변수 preset과 같은 순수 NumPy 관절 offset을 반환한다.
+
+    ``fr_forward_extension_m``는 실물 harness tuning 전용으로, kick 종점의
+    Cartesian toe x를 그만큼 더 전방으로 둔다. 기본값 0은 frozen teacher와 같다.
+    """
     index = {name: i for i, name in enumerate(CANONICAL_DOF_NAMES)}
     result = np.zeros(12, dtype=np.float64)
     stand_end, lift_end, kick_end, rest_end = PHASES
@@ -65,15 +69,23 @@ def offsets_at(elapsed_s: float) -> np.ndarray:
     thigh_i, calf_i = index["FR_thigh_joint"], index["FR_calf_joint"]
     toe = NOMINAL.copy()
     arrive_end = lift_end - LIFT_HOLD_S
+    # ``toe = NOMINAL + SWING_FRACTION * (point - NOMINAL)`` 이므로 Bezier
+    # control point에는 역으로 나눈 값을 적용해야 실제 종점이 정확히 extension만큼
+    # 전방으로 이동한다. simulator teacher의 기본 control point는 건드리지 않는다.
+    bezier = BEZIER.copy()
+    extension_in_control_point = fr_forward_extension_m / SWING_FRACTION
+    bezier[2, 0] += 0.50 * extension_in_control_point
+    bezier[3, 0] += 0.85 * extension_in_control_point
+    bezier[4, 0] += extension_in_control_point
     if LOAD_END <= elapsed_s < lift_end:
         toe = NOMINAL + minimum_jerk((elapsed_s - LOAD_END) / (arrive_end - LOAD_END)) * LIFT_FRACTION * (LIFT - NOMINAL)
     elif lift_end <= elapsed_s < kick_end:
         u = minimum_jerk((elapsed_s - lift_end) / (kick_end - lift_end))
         v = 1.0 - u
-        point = v ** 4 * BEZIER[0] + 4 * v ** 3 * u * BEZIER[1] + 6 * v ** 2 * u ** 2 * BEZIER[2] + 4 * v * u ** 3 * BEZIER[3] + u ** 4 * BEZIER[4]
+        point = v ** 4 * bezier[0] + 4 * v ** 3 * u * bezier[1] + 6 * v ** 2 * u ** 2 * bezier[2] + 4 * v * u ** 3 * bezier[3] + u ** 4 * bezier[4]
         toe = NOMINAL + SWING_FRACTION * (point - NOMINAL)
     elif kick_end <= elapsed_s < rest_end:
-        endpoint = NOMINAL + SWING_FRACTION * (BEZIER[4] - NOMINAL)
+        endpoint = NOMINAL + SWING_FRACTION * (bezier[4] - NOMINAL)
         u = minimum_jerk((elapsed_s - kick_end) / (rest_end - kick_end))
         toe = endpoint * (1.0 - u) + NOMINAL * u
         toe[2] += 0.08 * 16.0 * u ** 2 * (1.0 - u) ** 2
@@ -98,6 +110,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="출력 .npz; 같은 위치에 .csv 생성")
     parser.add_argument("--duration-s", type=float, default=6.0)
+    parser.add_argument(
+        "--fr-forward-extension-m", type=float, default=0.0,
+        help="실물 harness 전용 FR toe 종점 추가 전방거리 [m], 0..0.08 (기본 0)",
+    )
     args = parser.parse_args()
     if args.output.suffix != ".npz":
         parser.error("--output must end in .npz")
@@ -105,9 +121,14 @@ def main() -> None:
         parser.error("output directory does not exist: {}".format(args.output.parent))
     if args.duration_s < PHASES[-1] or not math.isclose(args.duration_s * SAMPLE_HZ, round(args.duration_s * SAMPLE_HZ), abs_tol=1e-9):
         parser.error("--duration-s must cover 4.90 s and be a 1/50 s multiple")
+    if not 0.0 <= args.fr_forward_extension_m <= 0.08:
+        parser.error("--fr-forward-extension-m must be in [0.0, 0.08]")
     sample_count = int(round(args.duration_s * SAMPLE_HZ))
     times = np.arange(sample_count, dtype=np.float64) / SAMPLE_HZ
-    offsets = np.vstack([offsets_at(time_s) for time_s in times])
+    offsets = np.vstack([
+        offsets_at(time_s, fr_forward_extension_m=args.fr_forward_extension_m)
+        for time_s in times
+    ])
     canonical = DEFAULT_Q[None, :] + offsets
     sdk = np.empty_like(canonical)
     sdk[:, CANONICAL_TO_SDK_MOTOR_INDEX] = canonical
@@ -119,6 +140,8 @@ def main() -> None:
         "teacher_source_sha256": source_sha256(TEACHER_SOURCE),
         "canonical_dof_names": list(CANONICAL_DOF_NAMES), "canonical_to_sdk_motor_index": list(CANONICAL_TO_SDK_MOTOR_INDEX),
         "sim_default_dof_pos_rad": DEFAULT_Q.tolist(), "phases_s": list(PHASES),
+        "fr_forward_extension_m": args.fr_forward_extension_m,
+        "physical_tuning": "harness_only; default 0 preserves the frozen teacher",
         "units": {"position": "rad", "planned_finite_difference_velocity": "rad/s"},
         "physical_status": "unattested_do_not_send_to_robot",
     }

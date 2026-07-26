@@ -155,3 +155,14 @@ python3 hardware/go2_edu_stationary_kick/query_motion_switcher.py --interface et
 `--fr-swing-scale 1.15`는 support preload와 시작/복귀 자세를 보존한 채 kick phase의 raw
 FR thigh/calf delta만 15% 키운다. 이는 forward reach physical tuning용이며 `0.8..1.3` 범위를
 넘지 않는다.
+
+발끝의 **Cartesian 종점 자체**를 더 전방으로 보내야 할 때는 export 시에만 다음처럼
+`--fr-forward-extension-m`을 준다. `0.08`은 기본 teacher 종점보다 실제 toe x 종점을 8 cm
+앞으로 둔다. 기본값 `0`은 frozen teacher와 완전히 같다. 이 physical-only override는
+simulator teacher/checkpoint를 바꾸지 않으며, harness와 no-ball 조건에서 먼저 검증한다.
+
+```bash
+python3 scripts/export_vendor_go2_fr_kick_teacher.py \
+  --output hardware_measurements/go2_fr_kick_teacher_x08.npz \
+  --fr-forward-extension-m 0.08
+```
