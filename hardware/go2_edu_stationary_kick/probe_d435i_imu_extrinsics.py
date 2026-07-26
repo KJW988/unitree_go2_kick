@@ -92,15 +92,22 @@ def main() -> int:
 
         accel_samples: list[list[float]] = []
         gyro_samples: list[list[float]] = []
+        last_motion_stamp_ms: dict[Any, float] = {}
+        duplicate_motion_frame_count = 0
         deadline = time.monotonic() + args.duration_s
         while time.monotonic() < deadline:
             frames = pipeline.wait_for_frames(timeout_ms=2000)
             for frame in frames:
                 if not frame.is_motion_frame():
                     continue
+                stream_type = frame.get_profile().stream_type()
+                stamp_ms = float(frame.get_timestamp())
+                if last_motion_stamp_ms.get(stream_type) == stamp_ms:
+                    duplicate_motion_frame_count += 1
+                    continue
+                last_motion_stamp_ms[stream_type] = stamp_ms
                 motion = frame.as_motion_frame().get_motion_data()
                 vector = [float(motion.x), float(motion.y), float(motion.z)]
-                stream_type = frame.get_profile().stream_type()
                 if stream_type == rs.stream.accel:
                     accel_samples.append(vector)
                 elif stream_type == rs.stream.gyro:
@@ -131,6 +138,7 @@ def main() -> int:
             "gyro_to_color": _extrinsics_dict(gyro_to_color),
             "accelerometer_m_s2": _vector_stats(np, accel_samples),
             "gyroscope_rad_s": _vector_stats(np, gyro_samples),
+            "duplicate_motion_frame_count": duplicate_motion_frame_count,
             "camera_to_base_extrinsic": None,
         }
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
