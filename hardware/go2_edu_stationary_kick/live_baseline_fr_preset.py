@@ -195,12 +195,14 @@ def main() -> int:
     parser.add_argument("--operator-confirm", help="execute에는 {} 필요".format(CONFIRMATION))
     parser.add_argument("--release-motion-owner", action="store_true", help="capture 뒤 공식 Sport/MCF ownership을 해제하고 즉시 hold")
     parser.add_argument("--prehold-s", type=float, default=1.0, help="release 뒤 baseline hold 시간")
+    parser.add_argument("--hold-only", action="store_true", help="FR preset 대신 captured standing baseline만 유지")
+    parser.add_argument("--hold-only-s", type=float, default=3.0, help="--hold-only 유지 시간")
     parser.add_argument("--log-dir", type=Path, default=Path("hardware_measurements"))
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
         parser.error("--execute requires --operator-confirm {}".format(CONFIRMATION))
-    if not all(math.isfinite(value) and value > 0.0 for value in (args.kp, args.kd, args.prehold_s)):
-        parser.error("--kp, --kd, and --prehold-s must be positive finite")
+    if not all(math.isfinite(value) and value > 0.0 for value in (args.kp, args.kd, args.prehold_s, args.hold_only_s)):
+        parser.error("--kp, --kd, --prehold-s, and --hold-only-s must be positive finite")
     if args.release_motion_owner and not args.execute:
         parser.error("--release-motion-owner requires --execute")
 
@@ -231,6 +233,8 @@ def main() -> int:
         "kd": args.kd,
         "release_motion_owner": args.release_motion_owner,
         "prehold_s": args.prehold_s,
+        "hold_only": args.hold_only,
+        "hold_only_s": args.hold_only_s,
         "execute": args.execute,
         "records": [],
     }
@@ -254,13 +258,14 @@ def main() -> int:
     if args.release_motion_owner:
         _release_motion_owner()
     start = time.monotonic()
-    end_s, next_tick = args.prehold_s + float(teacher["time_s"][-1]), time.monotonic()
-    print("LOWCMD_ACTIVE frozen_FR_preset=true prehold_s={}".format(args.prehold_s), flush=True)
+    motion_s = args.hold_only_s if args.hold_only else float(teacher["time_s"][-1])
+    end_s, next_tick = args.prehold_s + motion_s, time.monotonic()
+    print("LOWCMD_ACTIVE frozen_FR_preset={} hold_only={} prehold_s={}".format(not args.hold_only, args.hold_only, args.prehold_s), flush=True)
     try:
         while True:
             now, elapsed = time.monotonic(), time.monotonic() - start
             teacher_elapsed = max(0.0, elapsed - args.prehold_s)
-            desired = _interpolate(teacher_elapsed, teacher["time_s"], target)
+            desired = baseline if args.hold_only else _interpolate(teacher_elapsed, teacher["time_s"], target)
             streamer.set_target(desired)
             state, stamp = buffer.latest()
             if state is not None and now - stamp < 0.25:

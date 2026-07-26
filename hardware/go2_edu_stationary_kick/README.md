@@ -133,3 +133,7 @@ capture한 뒤에만 `--release-motion-owner`를 추가하면 captured baseline 
 200 Hz로 시작하고, 그 stream을 유지한 채 official `StandDown`/`ReleaseMode`를 수행한다.
 그 뒤 `--prehold-s` 동안 hold한 다음 preset을 시작한다. release만 먼저 수동으로 실행하면
 robot이 주저앉아 baseline이 사라지므로 사용하지 않는다.
+
+`--release-motion-owner`를 처음 사용할 때는 `--hold-only --hold-only-s 3`으로 standing
+handoff만 먼저 확인한다. 이 단계에서 robot이 자세를 유지하고 log의 joint tracking이
+작아야만 `--hold-only`를 빼고 FR preset을 실행한다.
