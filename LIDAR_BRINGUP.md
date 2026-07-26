@@ -107,6 +107,6 @@ python3 run.py
 ```
 
 `run.py`는 Foxy와 개인 DDS workspace를 자동으로 source한 뒤, `NetworkInterfaceAddress=lo`로 고정된 localhost에서 bag을 순서대로 재생·분석한다. 실제 Go2 DDS, motion, motor, policy에는
-접근하지 않는다. 결과는 `~/Desktop/Jiwon/lidar_bags/ball_1m_analysis.json` 및
+접근하지 않는다. Jetson CPU에서 모든 frame을 처리하기 위해 재생 속도를 0.25×로 낮추므로 전체 실행에는 약 6분이 걸린다. 결과는 `~/Desktop/Jiwon/lidar_bags/ball_1m_analysis.json` 및
 `empty_analysis.json`에 저장된다. 경로가 다르면 `GO2_LIDAR_SETUP` 또는
 `GO2_LIDAR_BAG_ROOT` 환경변수로만 바꿀 수 있다.

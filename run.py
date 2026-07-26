@@ -22,6 +22,9 @@ DEFAULT_SETUP = (
     "cyclonedds_ws/install/setup.bash"
 )
 TOPIC = "/utlidar/cloud_base"
+# Jetson CPU detector가 15.4 Hz playback을 놓치지 않도록 저장 bag만 감속한다.
+PLAYBACK_RATE = 0.25
+PLAYBACK_TIMEOUT_S = 300.0
 BAGS: Dict[str, Tuple[str, int, str]] = {
     "ball": ("go2_static_ball_1m_20260726_215950", 603, "ball_1m_analysis.json"),
     "empty": ("go2_static_empty_20260726_220040", 805, "empty_analysis.json"),
@@ -79,10 +82,13 @@ def _run_one_bag(label: str, bag_root: Path) -> Dict[str, object]:
         # DDS discovery를 끝낸 뒤 저장 bag만 localhost에 재생한다.
         time.sleep(1.5)
         playback = subprocess.Popen(
-            ["ros2", "bag", "play", str(bag_path), "--topics", TOPIC],
+            [
+                "ros2", "bag", "play", str(bag_path), "--topics", TOPIC,
+                "--rate", str(PLAYBACK_RATE),
+            ],
             env=os.environ.copy(),
         )
-        deadline = time.monotonic() + 120.0
+        deadline = time.monotonic() + PLAYBACK_TIMEOUT_S
         while playback.poll() is None and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.20)
         if playback.poll() is None:
