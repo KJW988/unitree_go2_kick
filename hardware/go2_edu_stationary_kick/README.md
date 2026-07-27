@@ -70,7 +70,8 @@ timestamp 정합 전에는 LiDAR 점군을 공 위치에 거짓으로 결합하�
 python hardware/go2_edu_stationary_kick/fetch_yolov5n_model.py
 
 python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
-  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080
+  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 \
+  --confidence 0.015
 ```
 
 같은 네트워크의 노트북 browser에서 `http://ROBOT_IP:8080`을 연다. 예를 들어 SSH가
@@ -78,6 +79,12 @@ python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
 confidence와 aligned-depth range를 함께 표시하고, 주황 표시의 `AprilTag: [11]`은
 벽 Tag가 동시에 보인다는 뜻이다. 초기에 이 화면으로 공과 Tag가 모두 들어오는 D435i
 각도만 조정한다. 이 stream은 보행/킥을 절대 시작하지 않는다.
+
+`http://ROBOT_IP:8080/state.json`은 후속 high-level walker가 읽을 수 있게 bbox,
+YOLO confidence, D435i range, 검출 Tag ID를 localhost JSON으로 제공한다. stream의
+낮은 기본 confidence(`0.015`)는 현장 generic COCO model이 실제 축구공에 준 약한
+score를 화면에서 확인하기 위한 후보 임계값이다. 이 값 하나는 motion 권한이 아니며,
+보행 전에는 range·연속성·Tag geometry를 모두 통과해야 한다.
 
 YOLOv5n ONNX artifact와 decoder 출처: [Ultralytics YOLOv5 v7.0 release](https://github.com/ultralytics/yolov5/releases/tag/v7.0),
 [Ultralytics ONNX/OpenCV DNN export guide](https://docs.ultralytics.com/yolov5/tutorials/model-export/).

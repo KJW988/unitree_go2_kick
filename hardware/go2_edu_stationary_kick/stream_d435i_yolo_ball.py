@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import math
 import socket
 import sys
@@ -131,17 +132,22 @@ class _FrameStore:
     def __init__(self) -> None:
         self.condition = threading.Condition()
         self.jpeg: Optional[bytes] = None
+        self.state: dict[str, Any] = {"ready": False}
         self.sequence = 0
 
-    def publish(self, jpeg: bytes) -> None:
+    def publish(self, jpeg: bytes, state: dict[str, Any]) -> None:
         with self.condition:
-            self.jpeg, self.sequence = jpeg, self.sequence + 1
+            self.jpeg, self.state, self.sequence = jpeg, state, self.sequence + 1
             self.condition.notify_all()
 
     def wait_next(self, previous: int) -> tuple[int, Optional[bytes]]:
         with self.condition:
             self.condition.wait_for(lambda: self.sequence != previous, timeout=2.0)
             return self.sequence, self.jpeg
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.condition:
+            return dict(self.state)
 
 
 class _Handler(server.BaseHTTPRequestHandler):
@@ -163,6 +169,15 @@ class _Handler(server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(page)))
             self.end_headers()
             self.wfile.write(page)
+            return
+        if self.path == "/state.json":
+            payload = json.dumps(self.server.frames.snapshot(), ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
             return
         if self.path != "/stream.mjpg":
             self.send_error(404)
@@ -192,7 +207,10 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=15)
-    parser.add_argument("--confidence", type=float, default=0.35)
+    # 이 D435i 현장 프레임에서 generic COCO ball score가 약 0.021이었다.
+    # stream은 후보를 보이는 진단 단계이므로 낮게 두고, motion 단계에서는 depth와
+    # temporal/Tag geometry gate를 추가해 이 값만으로 보행하지 않는다.
+    parser.add_argument("--confidence", type=float, default=0.015)
     parser.add_argument("--nms", type=float, default=0.45)
     parser.add_argument("--jpeg-quality", type=int, default=80)
     parser.add_argument("--inference-every", type=int, default=1)
@@ -256,7 +274,18 @@ def main() -> int:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50, 210, 255), 2, cv2.LINE_AA)
             ok, encoded = cv2.imencode(".jpg", rendered, [int(cv2.IMWRITE_JPEG_QUALITY), args.jpeg_quality])
             if ok:
-                frames.publish(encoded.tobytes())
+                ball_state = None if latest_detection is None else {
+                    "bbox_xyxy": [int(value) for value in latest_detection[:4]],
+                    "confidence": float(latest_detection[4]),
+                    "depth_range_m": None if depth_range is None else float(depth_range),
+                }
+                frames.publish(encoded.tobytes(), {
+                    "ready": True,
+                    "stamp_monotonic_s": time.monotonic(),
+                    "ball": ball_state,
+                    "apriltag_ids": tag_ids,
+                    "image_size": [int(args.width), int(args.height)],
+                })
     finally:
         if profile is not None:
             pipeline.stop()
