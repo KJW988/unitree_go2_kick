@@ -9,6 +9,15 @@ Unitree의 공식 Python low-level 예제에서 DDS channel, `LowCmd_`, CRC 사�
 공식 예제와 달리 `MotionSwitcherClient.ReleaseMode()`나 `SportClient.StandDown()`은 절대
 호출하지 않는다. 출처와 차이는 [Unitree SDK2 Python Go2 stand example](https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/example/go2/low_level/go2_stand_example.py)에 기록되어 있다.
 
+## 현재 MCF 보행 상태
+
+이 Go2는 firmware 1.1.11에서 `mcf`가 Functional이고 legacy `sport_mode`가 Close다.
+따라서 기존 SDK `SportClient.Move()` 또는 `ObstaclesAvoidClient.Move()`의 return code만으로
+실제 보행을 판단하거나 autonomous approach를 arm하면 안 된다. 현재 D435i/Tag vision과
+frozen FR kick은 별도로 유지하며, 보행은 MCF WebRTC data-channel의 read-only probe가
+통과한 뒤에만 다시 연결한다. 자세한 compatibility 판정과 project-local setup은
+[MCF_TRANSPORT.md](MCF_TRANSPORT.md)를 따른다.
+
 ## 먼저 실제 PC에서 할 확인
 
 실제 PC에서만 공식 SDK clone 경로에서 설치 여부와 NIC 이름을 확인한다. 이는 구독-only
