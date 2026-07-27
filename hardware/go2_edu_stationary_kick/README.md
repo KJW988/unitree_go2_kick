@@ -357,3 +357,20 @@ python hardware/go2_edu_stationary_kick/approach_ball_to_tag.py \
 camera optical-frame lateral 값만으로는 FR foot의 physical lateral offset을 증명할 수
 없으므로, `--enable-lateral`은 기본 비활성이다. 이 옵션은 FR lane 실측 보정 뒤에만 쓴다.
 이것이 없는 상태에서 final LowCmd kick을 자동 연결하는 것은 금지한다.
+
+
+### YOLO11n immediate replacement
+
+`YOLOv5n` smoke model 대신 공식 COCO pretrained `YOLO11n` ONNX를 바로 사용할 수 있다.
+이것은 fine-tune model이 아니므로 ball confidence 하나만으로 보행을 허용하지 않는다.
+D435i depth, AprilTag target line, odom stale gate는 그대로 유지한다.
+
+```bash
+python hardware/go2_edu_stationary_kick/fetch_yolo11n_model.py
+python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
+  --model hardware_models/yolo11n-v8.3.0.onnx \
+  --host 0.0.0.0 --port 8080 --confidence 0.015
+```
+
+stream 시작 시 OpenCV DNN이 이 ONNX graph를 load하지 못하면 motion runner를 실행하지
+않는다. 그 경우 TensorRT engine을 **해당 Jetson에서** build해 runtime을 교체해야 한다.
