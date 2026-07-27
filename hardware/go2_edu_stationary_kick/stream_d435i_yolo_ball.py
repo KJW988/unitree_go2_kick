@@ -169,6 +169,41 @@ def _ball_camera_points(intrinsics: Any, detection: Optional[tuple[int, int, int
     return surface, centre
 
 
+def _fit_floor_plane(np: Any, depth_raw: Any, depth_scale_m: float, intrinsics: Any) -> Optional[tuple[Any, float, int]]:
+    """화면 하단 aligned depth의 큰 평면을 robust re-fit해 camera-frame 바닥으로 쓴다."""
+    height, width = depth_raw.shape
+    ys, xs = np.mgrid[int(height * 0.55):height:12, 0:width:12]
+    raw = depth_raw[ys, xs].astype(np.float64)
+    valid = (raw * depth_scale_m >= 0.25) & (raw * depth_scale_m <= 3.0)
+    if int(np.count_nonzero(valid)) < 80:
+        return None
+    z = raw[valid] * depth_scale_m
+    u, v = xs[valid].astype(np.float64), ys[valid].astype(np.float64)
+    points = np.column_stack(((u - float(intrinsics.ppx)) * z / float(intrinsics.fx),
+                              (v - float(intrinsics.ppy)) * z / float(intrinsics.fy), z))
+    inliers = np.ones(len(points), dtype=bool)
+    for _ in range(3):
+        selected = points[inliers]
+        if len(selected) < 80:
+            return None
+        centroid = np.mean(selected, axis=0)
+        _, _, vectors = np.linalg.svd(selected - centroid, full_matrices=False)
+        normal = vectors[-1]
+        normal /= np.linalg.norm(normal)
+        offset = -float(np.dot(normal, centroid))
+        inliers = np.abs(points @ normal + offset) <= 0.025
+    return normal, offset, int(np.count_nonzero(inliers))
+
+
+def _project_to_plane(np: Any, point: Optional[list[float]], plane: Optional[tuple[Any, float, int]]) -> Optional[list[float]]:
+    if point is None or plane is None:
+        return None
+    normal, offset, _ = plane
+    vector = np.asarray(point, dtype=np.float64)
+    projected = vector - (float(np.dot(normal, vector)) + offset) * normal
+    return [float(value) for value in projected]
+
+
 class _FrameStore:
     def __init__(self) -> None:
         self.condition = threading.Condition()
@@ -309,6 +344,16 @@ def main() -> int:
             ball_surface, ball_center = _ball_camera_points(
                 intrinsics, latest_detection, depth_range, args.ball_diameter_m * 0.5
             )
+            floor_plane = _fit_floor_plane(np, depth, depth_scale_m, intrinsics)
+            ball_ground = _project_to_plane(np, ball_center, floor_plane)
+            tag_ground = {str(key): _project_to_plane(np, value, floor_plane) for key, value in tag_centers.items()}
+            target_direction = None
+            if ball_ground is not None and tag_ground.get("11") is not None:
+                delta = np.asarray(tag_ground["11"], dtype=np.float64) - np.asarray(ball_ground, dtype=np.float64)
+                distance = float(np.linalg.norm(delta))
+                if distance >= 0.5:
+                    target_direction = {"tag_id": 11, "distance_m": distance,
+                                        "unit_camera_xyz": [float(value) for value in delta / distance]}
             if latest_detection is not None:
                 x0, y0, x1, y1, confidence = latest_detection
                 cv2.rectangle(rendered, (x0, y0), (x1, y1), (40, 220, 40), 2)
@@ -328,6 +373,7 @@ def main() -> int:
                     "depth_range_m": None if depth_range is None else float(depth_range),
                     "surface_camera_xyz_m": ball_surface,
                     "center_camera_xyz_m": ball_center,
+                    "ground_camera_xyz_m": ball_ground,
                 }
                 frames.publish(encoded.tobytes(), {
                     "ready": True,
@@ -335,6 +381,12 @@ def main() -> int:
                     "ball": ball_state,
                     "apriltag_ids": tag_ids,
                     "apriltag_center_camera_xyz_m": {str(key): value for key, value in tag_centers.items()},
+                    "apriltag_ground_camera_xyz_m": tag_ground,
+                    "floor_plane_camera": None if floor_plane is None else {
+                        "normal": [float(value) for value in floor_plane[0]],
+                        "offset": float(floor_plane[1]), "inlier_count": floor_plane[2],
+                    },
+                    "target_line": target_direction,
                     "image_size": [int(args.width), int(args.height)],
                 })
     finally:
