@@ -16,7 +16,6 @@ YOLOv5 ONNX/OpenCV DNN decoder는 Ultralytics YOLOv5 v7.0 export 형식(1x25200x
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import math
 import socket
@@ -128,6 +127,48 @@ def _draw_tag_overlay(cv2: Any, image: Any) -> list[int]:
     return [int(value) for value in ids.reshape(-1)]
 
 
+def _tag_camera_centers(cv2: Any, np: Any, image: Any, intrinsics: Any, tag_size_m: float) -> dict[int, list[float]]:
+    """Tag centre를 OpenCV color-camera frame으로 기록한다; base 변환은 하지 않는다."""
+    if not hasattr(cv2, "aruco") or not hasattr(cv2.aruco, "DICT_APRILTAG_36h11"):
+        return {}
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    corners, ids, _ = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters()).detectMarkers(
+        cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    )
+    if ids is None:
+        return {}
+    half = tag_size_m * 0.5
+    object_points = np.asarray(((-half, half, 0.0), (half, half, 0.0),
+                                (half, -half, 0.0), (-half, -half, 0.0)), dtype=np.float64)
+    camera_matrix = np.asarray(((intrinsics.fx, 0.0, intrinsics.ppx),
+                                (0.0, intrinsics.fy, intrinsics.ppy), (0.0, 0.0, 1.0)), dtype=np.float64)
+    distortion = np.asarray(intrinsics.coeffs, dtype=np.float64).reshape(-1, 1)
+    flag = getattr(cv2, "SOLVEPNP_IPPE_SQUARE", cv2.SOLVEPNP_ITERATIVE)
+    result: dict[int, list[float]] = {}
+    for marker_corners, marker_id in zip(corners, ids.reshape(-1).astype(int)):
+        ok, _, tvec = cv2.solvePnP(object_points, np.asarray(marker_corners, dtype=np.float64).reshape(4, 2),
+                                   camera_matrix, distortion, flags=flag)
+        if ok:
+            result[int(marker_id)] = [float(value) for value in tvec.reshape(3)]
+    return result
+
+
+def _ball_camera_points(intrinsics: Any, detection: Optional[tuple[int, int, int, int, float]],
+                        surface_range_m: Optional[float], ball_radius_m: float) -> tuple[Optional[list[float]], Optional[list[float]]]:
+    """Depth가 보는 공 표면에서 반지름만큼 ray 방향으로 옮긴 centre 근사값이다."""
+    if detection is None or surface_range_m is None:
+        return None, None
+    x0, y0, x1, y1, _ = detection
+    u, v = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+    ray = [((u - float(intrinsics.ppx)) / float(intrinsics.fx)),
+           ((v - float(intrinsics.ppy)) / float(intrinsics.fy)), 1.0]
+    norm = math.sqrt(sum(value * value for value in ray))
+    unit = [value / norm for value in ray]
+    surface = [surface_range_m * value for value in unit]
+    centre = [(surface_range_m + ball_radius_m) * value for value in unit]
+    return surface, centre
+
+
 class _FrameStore:
     def __init__(self) -> None:
         self.condition = threading.Condition()
@@ -214,10 +255,13 @@ def main() -> int:
     parser.add_argument("--nms", type=float, default=0.45)
     parser.add_argument("--jpeg-quality", type=int, default=80)
     parser.add_argument("--inference-every", type=int, default=1)
+    parser.add_argument("--tag-size-m", type=float, default=0.152)
+    parser.add_argument("--ball-diameter-m", type=float, default=0.22)
     args = parser.parse_args()
     if not (1 <= args.port <= 65535 and min(args.width, args.height, args.fps, args.inference_every) > 0):
         parser.error("port/width/height/fps/inference-every must be positive")
-    if not (0.0 < args.confidence <= 1.0 and 0.0 < args.nms <= 1.0 and 1 <= args.jpeg_quality <= 100):
+    if not (0.0 < args.confidence <= 1.0 and 0.0 < args.nms <= 1.0 and 1 <= args.jpeg_quality <= 100
+            and args.tag_size_m > 0.0 and args.ball_diameter_m > 0.0):
         parser.error("confidence/nms/jpeg-quality range is invalid")
 
     cv2, np, rs = _require_runtime()
@@ -261,6 +305,10 @@ def main() -> int:
             tag_ids = _draw_tag_overlay(cv2, rendered)
             intrinsics = color_frame.profile.as_video_stream_profile().intrinsics
             depth_range = _depth_range_m(np, depth, depth_scale_m, intrinsics, latest_detection)
+            tag_centers = _tag_camera_centers(cv2, np, color, intrinsics, args.tag_size_m)
+            ball_surface, ball_center = _ball_camera_points(
+                intrinsics, latest_detection, depth_range, args.ball_diameter_m * 0.5
+            )
             if latest_detection is not None:
                 x0, y0, x1, y1, confidence = latest_detection
                 cv2.rectangle(rendered, (x0, y0), (x1, y1), (40, 220, 40), 2)
@@ -278,12 +326,15 @@ def main() -> int:
                     "bbox_xyxy": [int(value) for value in latest_detection[:4]],
                     "confidence": float(latest_detection[4]),
                     "depth_range_m": None if depth_range is None else float(depth_range),
+                    "surface_camera_xyz_m": ball_surface,
+                    "center_camera_xyz_m": ball_center,
                 }
                 frames.publish(encoded.tobytes(), {
                     "ready": True,
                     "stamp_monotonic_s": time.monotonic(),
                     "ball": ball_state,
                     "apriltag_ids": tag_ids,
+                    "apriltag_center_camera_xyz_m": {str(key): value for key, value in tag_centers.items()},
                     "image_size": [int(args.width), int(args.height)],
                 })
     finally:
