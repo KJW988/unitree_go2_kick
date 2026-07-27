@@ -154,6 +154,18 @@ def require_sdk() -> tuple[Any, Any, Any, Any, Any]:
     return ChannelFactoryInitialize, ChannelSubscriber, SportClient, Odometry_, WirelessController_
 
 
+def result_code(result: Any) -> int:
+    """SDK Python의 int 또는 ``(int, payload)`` 반환을 같은 방식으로 판정한다."""
+    return int(result[0] if isinstance(result, tuple) else result)
+
+
+def planar_distance(first: Optional[tuple[float, float, float]],
+                    second: Optional[tuple[float, float, float]]) -> Optional[float]:
+    if first is None or second is None:
+        return None
+    return math.hypot(second[0] - first[0], second[1] - first[1])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interface", default="eth0")
@@ -161,11 +173,19 @@ def main() -> int:
     parser.add_argument("--tag-id", type=int, required=True)
     parser.add_argument("--execute", action="store_true", help="없으면 command plan만 출력한다")
     parser.add_argument("--operator-confirm", help="--execute에는 {} 필요".format(CONFIRMATION))
-    parser.add_argument("--max-runtime-s", type=float, default=30.0)
+    parser.add_argument("--max-runtime-s", type=float, default=8.0)
     parser.add_argument("--tick-hz", type=float, default=10.0)
     parser.add_argument("--perception-max-age-s", type=float, default=0.35)
     parser.add_argument("--odom-max-age-s", type=float, default=0.50)
     parser.add_argument("--stop-ball-range-m", type=float, default=0.55)
+    parser.add_argument("--max-travel-m", type=float, default=0.35,
+                        help="start odom에서 이 평면 거리만큼 이동하면 무조건 정지")
+    parser.add_argument("--motion-confirm-s", type=float, default=1.5,
+                        help="advance command 뒤 실제 odom progress를 확인할 시간")
+    parser.add_argument("--min-motion-progress-m", type=float, default=0.01)
+    parser.add_argument("--range-progress-s", type=float, default=3.0,
+                        help="forward 중 ball range가 줄지 않으면 정지하는 시간")
+    parser.add_argument("--min-range-progress-m", type=float, default=0.03)
     parser.add_argument("--max-forward-mps", type=float, default=0.08)
     parser.add_argument("--max-lateral-mps", type=float, default=0.05)
     parser.add_argument("--max-yaw-rps", type=float, default=0.20)
@@ -183,6 +203,9 @@ def main() -> int:
         parser.error("--tick-hz/max-runtime-s 범위를 확인하세요")
     if not 0.30 <= args.stop_ball_range_m <= 2.0:
         parser.error("--stop-ball-range-m은 D435i valid range 안에서 설정하세요")
+    if min(args.max_travel_m, args.motion_confirm_s, args.min_motion_progress_m,
+           args.range_progress_s, args.min_range_progress_m) <= 0.0:
+        parser.error("motion/range watchdog 값은 양수여야 합니다")
 
     ChannelFactoryInitialize, ChannelSubscriber, SportClient, Odometry_, WirelessController_ = require_sdk()
     odom, remote = OdomStore(), RemoteLatch(args.remote_deadzone)
@@ -202,10 +225,19 @@ def main() -> int:
         flush=True,
     )
     start, period, last_reason = time.monotonic(), 1.0 / args.tick_hz, ""
+    start_position: Optional[tuple[float, float, float]] = None
+    advance_started_at: Optional[float] = None
+    advance_start_position: Optional[tuple[float, float, float]] = None
+    advance_start_range: Optional[float] = None
+    best_range: Optional[float] = None
+    last_telemetry_at = float("-inf")
     try:
         while time.monotonic() - start < args.max_runtime_s:
             perception = fetch_perception(args.perception_url, args.tag_id, timeout_s=min(0.2, period))
-            odom_stamp, _, _ = odom.snapshot()
+            odom_stamp, position, _ = odom.snapshot()
+            now = time.monotonic()
+            if start_position is None and position is not None:
+                start_position = position
             reason = ""
             command = (0.0, 0.0, 0.0)
             if remote.tripped():
@@ -219,18 +251,61 @@ def main() -> int:
             else:
                 vx, vy, wz, reason = plan_command(perception, args)
                 command = (vx, vy, wz)
+                travelled = planar_distance(start_position, position)
+                if travelled is not None and travelled >= args.max_travel_m:
+                    reason, command = "travel_limit", (0.0, 0.0, 0.0)
+                elif reason == "advance":
+                    if advance_started_at is None:
+                        advance_started_at = now
+                        advance_start_position = position
+                        advance_start_range = perception.ball_range_m
+                        best_range = perception.ball_range_m
+                    else:
+                        best_range = min(best_range if best_range is not None else perception.ball_range_m,
+                                         perception.ball_range_m)
+                        elapsed = now - advance_started_at
+                        moved = planar_distance(advance_start_position, position)
+                        if elapsed >= args.motion_confirm_s and (moved is None or moved < args.min_motion_progress_m):
+                            reason, command = "motion_not_confirmed", (0.0, 0.0, 0.0)
+                        elif elapsed >= args.range_progress_s and (
+                            advance_start_range is None or best_range is None
+                            or advance_start_range - best_range < args.min_range_progress_m
+                        ):
+                            reason, command = "ball_range_no_progress", (0.0, 0.0, 0.0)
+                else:
+                    advance_started_at = None
+                    advance_start_position = None
+                    advance_start_range = None
+                    best_range = None
             if reason != last_reason:
                 print(
                     "STATE reason={} command=[{:.3f},{:.3f},{:.3f}]".format(reason, *command),
                     flush=True,
                 )
                 last_reason = reason
+            if perception is not None and now - last_telemetry_at >= 1.0:
+                travelled = planar_distance(start_position, position)
+                print(
+                    "TELEMETRY reason={} range_m={:.3f} heading_rad={:.3f} travel_m={} command=[{:.3f},{:.3f},{:.3f}]".format(
+                        reason, perception.ball_range_m, perception.heading_error_rad,
+                        "unknown" if travelled is None else "{:.3f}".format(travelled), *command
+                    ),
+                    flush=True,
+                )
+                last_telemetry_at = now
             if args.execute:
                 if reason in ("advance", "align"):
-                    sport.Move(*command)
+                    code = result_code(sport.Move(*command))
+                    if code != 0:
+                        sport.StopMove()
+                        print("APPROACH_STOP reason=move_rejected code={}".format(code), flush=True)
+                        return 2
                 else:
                     sport.StopMove()
-                    if reason in ("staging_ready", "remote_preempted", "perception_missing", "perception_stale", "odom_stale"):
+                    if reason in (
+                        "staging_ready", "remote_preempted", "perception_missing", "perception_stale", "odom_stale",
+                        "travel_limit", "motion_not_confirmed", "ball_range_no_progress",
+                    ):
                         print("APPROACH_STOP reason={}".format(reason), flush=True)
                         return 0 if reason == "staging_ready" else 2
             else:
