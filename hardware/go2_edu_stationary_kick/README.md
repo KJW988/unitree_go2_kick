@@ -86,6 +86,26 @@ YOLO confidence, D435i range, 검출 Tag ID를 localhost JSON으로 제공한다
 score를 화면에서 확인하기 위한 후보 임계값이다. 이 값 하나는 motion 권한이 아니며,
 보행 전에는 range·연속성·Tag geometry를 모두 통과해야 한다.
 
+## LiDAR odometry bridge
+
+공이 FR 최종 킥 위치에서 camera 아래로 사라지는 것은 정상이다. camera가 공/Tag를
+볼 때 target ray를 freeze한 뒤, 마지막 짧은 docking displacement는 Go2 LiDAR odometry로
+추적한다. 아래 bridge는 ROS2 `/utlidar/robot_odom`만 localhost JSON으로 읽어 내보내며
+motion command를 만들지 않는다. D435 perception env와 섞지 말고 깨끗한 Foxy shell에서
+별도 실행한다.
+
+```bash
+env -i HOME="$HOME" USER="$USER" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  LANG=C.UTF-8 bash --noprofile --norc
+source /opt/ros/foxy/setup.bash
+cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
+/usr/bin/python3 hardware/go2_edu_stationary_kick/bridge_utlidar_odom.py
+```
+
+다른 terminal에서 `curl -s http://127.0.0.1:8081/state.json`으로 `position_xyz_m`,
+`yaw_rad`, `receipt_monotonic_s`가 갱신되는지 확인한다. 이 bridge는 camera↔base
+extrinsic 보정 전에는 공 좌표와 직접 결합하지 않는다.
+
 YOLOv5n ONNX artifact와 decoder 출처: [Ultralytics YOLOv5 v7.0 release](https://github.com/ultralytics/yolov5/releases/tag/v7.0),
 [Ultralytics ONNX/OpenCV DNN export guide](https://docs.ultralytics.com/yolov5/tutorials/model-export/).
 
