@@ -90,16 +90,16 @@ score를 화면에서 확인하기 위한 후보 임계값이다. 이 값 하나
 
 공이 FR 최종 킥 위치에서 camera 아래로 사라지는 것은 정상이다. camera가 공/Tag를
 볼 때 target ray를 freeze한 뒤, 마지막 짧은 docking displacement는 Go2 LiDAR odometry로
-추적한다. 아래 bridge는 ROS2 `/utlidar/robot_odom`만 localhost JSON으로 읽어 내보내며
-motion command를 만들지 않는다. D435 perception env와 섞지 말고 깨끗한 Foxy shell에서
-별도 실행한다.
+추적한다. 아래 bridge는 ROS2 CLI/RMW를 거치지 않고 검증된 Unitree DDS
+`rt/utlidar/robot_odom`만 localhost JSON으로 읽어 내보내며 motion command를 만들지 않는다.
+D435 perception env와 섞지 말고 SDK conda environment의 별도 terminal에서 실행한다.
 
 ```bash
-env -i HOME="$HOME" USER="$USER" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  LANG=C.UTF-8 bash --noprofile --norc
-source /opt/ros/foxy/setup.bash
 cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
-/usr/bin/python3 hardware/go2_edu_stationary_kick/bridge_utlidar_odom.py
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-unitree-sdk-py311
+unset PYTHONPATH
+python hardware/go2_edu_stationary_kick/bridge_utlidar_odom.py --interface eth0
 ```
 
 다른 terminal에서 `curl -s http://127.0.0.1:8081/state.json`으로 `position_xyz_m`,
