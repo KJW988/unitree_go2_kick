@@ -55,6 +55,33 @@ read-only capture로 color-aligned depth, factory color intrinsics, depth scale�
 python hardware/go2_edu_stationary_kick/capture_d435i_rgbd.py --duration-s 10
 ```
 
+## D435i YOLO 공 검출 + browser stream
+
+공은 LiDAR 단독 검출 대상으로 삼지 않는다. 먼저 D435i RGB의 공식 YOLOv5n COCO
+`sports ball` 후보를 얻고, 같은 D435i의 color-aligned depth로 bbox 내부의 metric
+range를 확인한다. 따라서 이 단계는 RGB+depth 결합이며, camera-to-base extrinsic과
+timestamp 정합 전에는 LiDAR 점군을 공 위치에 거짓으로 결합하지 않는다. LiDAR는 이후
+장애물/odometry 용도로 유지한다.
+
+모델은 git에 넣지 않는다. 실제 PC의 project-local `hardware_models/`에만 한 번
+받는다. 다음 두 명령 모두 D435i를 읽기만 하며 Go2 motion/DDS를 전혀 사용하지 않는다.
+
+```bash
+python hardware/go2_edu_stationary_kick/fetch_yolov5n_model.py
+
+python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
+  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080
+```
+
+같은 네트워크의 노트북 browser에서 `http://ROBOT_IP:8080`을 연다. 예를 들어 SSH가
+`192.168.0.90`이면 `http://192.168.0.90:8080`이다. 초록 bbox의 `ball`은 YOLO
+confidence와 aligned-depth range를 함께 표시하고, 주황 표시의 `AprilTag: [11]`은
+벽 Tag가 동시에 보인다는 뜻이다. 초기에 이 화면으로 공과 Tag가 모두 들어오는 D435i
+각도만 조정한다. 이 stream은 보행/킥을 절대 시작하지 않는다.
+
+YOLOv5n ONNX artifact와 decoder 출처: [Ultralytics YOLOv5 v7.0 release](https://github.com/ultralytics/yolov5/releases/tag/v7.0),
+[Ultralytics ONNX/OpenCV DNN export guide](https://docs.ultralytics.com/yolov5/tutorials/model-export/).
+
 출력 `metadata.json`의 `camera_to_base_extrinsic`은 의도적으로 `null`이다. 카메라 mount의
 실측 rigid transform을 얻기 전에는 base-frame ball/Tag 좌표나 접근 command를 만들지 않는다.
 
