@@ -10,8 +10,9 @@ YOLO가 COCO ``sports ball`` 2D 후보를 만들고, D435i의 color-aligned dept
 생성하지 않는다. 따라서 browser video에서 공과 Tag가 동시에 보이는지, RGB 후보와
 depth range가 일치하는지 먼저 확인하는 용도다.
 
-YOLOv5 ONNX/OpenCV DNN decoder는 Ultralytics YOLOv5 v7.0 export 형식(1x25200x85)을
-따른다. 출처: https://github.com/ultralytics/yolov5/tree/v7.0
+YOLOv5 v7.0와 YOLO11n COCO ONNX export의 2D bbox/class score 형식을 모두 지원한다.
+출처: https://github.com/ultralytics/yolov5/tree/v7.0,
+https://github.com/ultralytics/assets/releases/tag/v8.3.0
 """
 from __future__ import annotations
 
@@ -43,8 +44,8 @@ def _require_runtime() -> tuple[Any, Any, Any]:
     return cv2, np, rs
 
 
-class YoloV5BallDetector:
-    """OpenCV DNN only YOLOv5n COCO sports-ball detector."""
+class YoloBallDetector:
+    """OpenCV DNN으로 YOLOv5/YOLO11 COCO sports-ball 후보를 읽는다."""
 
     def __init__(self, cv2: Any, np: Any, model: Path, confidence: float, nms: float):
         if not model.is_file():
@@ -64,10 +65,21 @@ class YoloV5BallDetector:
         blob = self.cv2.dnn.blobFromImage(canvas, 1.0 / 255.0, (LETTERBOX_SIZE, LETTERBOX_SIZE), swapRB=True)
         self.net.setInput(blob)
         raw = self.np.asarray(self.net.forward())
-        if raw.shape != (1, 25200, 85):
-            raise RuntimeError("unexpected YOLOv5n ONNX output shape: {}".format(tuple(raw.shape)))
-        rows = raw[0]
-        scores = rows[:, 4] * rows[:, 5 + COCO_SPORTS_BALL_CLASS_ID]
+        # YOLOv5: 1x25200x85 (xywh, objectness, 80 classes)
+        # YOLO11: 1x84x8400 (xywh, 80 classes), OpenCV version에 따라 1x8400x84일 수 있다.
+        if raw.ndim != 3 or raw.shape[0] != 1:
+            raise RuntimeError("unexpected YOLO ONNX output shape: {}".format(tuple(raw.shape)))
+        if raw.shape[2] == 85:
+            rows = raw[0]
+            scores = rows[:, 4] * rows[:, 5 + COCO_SPORTS_BALL_CLASS_ID]
+        elif raw.shape[1] == 84:
+            rows = raw[0].transpose(1, 0)
+            scores = rows[:, 4 + COCO_SPORTS_BALL_CLASS_ID]
+        elif raw.shape[2] == 84:
+            rows = raw[0]
+            scores = rows[:, 4 + COCO_SPORTS_BALL_CLASS_ID]
+        else:
+            raise RuntimeError("unsupported YOLO ONNX output shape: {}".format(tuple(raw.shape)))
         candidate_indices = self.np.flatnonzero(scores >= self.confidence)
         boxes, confidences = [], []
         for index in candidate_indices.tolist():
@@ -300,7 +312,7 @@ def main() -> int:
         parser.error("confidence/nms/jpeg-quality range is invalid")
 
     cv2, np, rs = _require_runtime()
-    detector = YoloV5BallDetector(cv2, np, args.model, args.confidence, args.nms)
+    detector = YoloBallDetector(cv2, np, args.model, args.confidence, args.nms)
     frames = _FrameStore()
     httpd = server.ThreadingHTTPServer((args.host, args.port), _Handler)
     httpd.frames = frames
