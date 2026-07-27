@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""ROS2 `/utlidar/robot_odom`을 localhost JSON으로 read-only bridge한다.
+"""Unitree DDS `rt/utlidar/robot_odom`을 localhost JSON으로 read-only bridge한다.
 
-이 bridge는 Unitree LiDAR odometry 구독만 수행한다. Go2 DDS, LowCmd,
-SportClient, MotionSwitcher를 생성하지 않는다. D435i process가 공/Tag를 보는 동안
+이 bridge는 Unitree LiDAR odometry 구독만 수행한다. LowCmd, SportClient,
+MotionSwitcher, DDS publisher를 생성하지 않는다. D435i process가 공/Tag를 보는 동안
 이 odom은 camera visibility가 끝난 마지막 FR docking 구간의 base displacement를
 추적하는 데 사용한다.
 """
@@ -68,34 +68,39 @@ class Handler(server.BaseHTTPRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--topic", default="/utlidar/robot_odom")
+    parser.add_argument("--interface", default="eth0", help="Go2 internal DDS NIC")
+    parser.add_argument("--topic", default="rt/utlidar/robot_odom")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8081)
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be in 1..65535")
     try:
-        import rclpy
-        from nav_msgs.msg import Odometry
+        from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
+        from unitree_sdk2py.idl.nav_msgs.msg.dds_ import Odometry_
     except ImportError as error:
-        raise RuntimeError("ROS2 Foxy environment의 rclpy/nav_msgs가 필요합니다: {}".format(error)) from error
+        raise RuntimeError(
+            "unitree_sdk2py SDK environment가 필요합니다: {}".format(error)
+        ) from error
     store = OdomStore()
-    rclpy.init()
-    node = rclpy.create_node("go2_kick_lidar_odom_bridge")
-    node.create_subscription(Odometry, args.topic, store.update, 10)
+    ChannelFactoryInitialize(0, args.interface)
+    subscriber = ChannelSubscriber(args.topic, Odometry_)
+    subscriber.Init(store.update, 10)
     httpd = server.ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.odom_store = store
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    print("UTLIDAR_ODOM_BRIDGE_READY topic={} url=http://{}:{}/state.json".format(
-        args.topic, args.host, args.port), flush=True)
+    print(
+        "UTLIDAR_ODOM_BRIDGE_READY interface={} topic={} url=http://{}:{}/state.json".format(
+            args.interface, args.topic, args.host, args.port
+        ),
+        flush=True,
+    )
     try:
-        while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.05)
+        while True:
+            time.sleep(0.1)
     finally:
         httpd.shutdown()
         httpd.server_close()
-        node.destroy_node()
-        rclpy.shutdown()
     return 0
 
 
