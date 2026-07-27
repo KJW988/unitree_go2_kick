@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """D435i ball/AprilTag state와 내장 LiDAR odom으로 Go2를 안전 staging 위치까지 보행시킨다.
 
-이 프로그램은 frozen FR LowCmd kick을 호출하지 않는다. Unitree MCF SportClient의
-고수준 ``Move(vx, vy, vyaw)``만 사용해 공과 Tag가 동시에 보이는 구간에서 정렬하고,
+이 프로그램은 frozen FR LowCmd kick을 호출하지 않는다. Unitree Go2의
+``ObstaclesAvoidClient.Move(vx, vy, vyaw)``만 사용해 공과 Tag가 동시에 보이는 구간에서 정렬하고,
 설정한 camera depth standoff에서 반드시 멈춘다. 그래서 공이 camera 아래로 사라지는
 최종 FR docking과 LowCmd kick은 이 프로그램의 범위 밖이다.
 
-Unitree SDK2 Go2 SportClient의 공식 ``Move`` API를 채택했다.
+Unitree SDK2 Go2 ObstaclesAvoidClient의 공식 ``Move`` API를 채택했다.
 출처: https://github.com/unitreerobotics/unitree_sdk2_python
-변경점: remote input, stale perception, runtime expiry, target loss가 모두 StopMove로
-fail-closed 되며 원격 조종 입력 후에는 이 process가 자동 재개하지 않는다.
+공 자체는 접근 단계의 목표물이므로 execute에는 avoidance-off를 명시적으로 요구한다.
+remote input, stale perception, runtime expiry, target loss가 모두 zero velocity와 API
+command source 해제로 fail-closed 되며 원격 조종 입력 후에는 이 process가 자동 재개하지 않는다.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 
-CONFIRMATION = "SPORT_APPROACH_READY"
+CONFIRMATION = "OBSTACLE_OVERRIDE_READY"
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -121,7 +122,7 @@ def fetch_perception(url: str, tag_id: int, timeout_s: float) -> Optional[Percep
 
 
 def plan_command(state: Perception, args: argparse.Namespace) -> tuple[float, float, float, str]:
-    """camera-frame target ray로 보수적 SportClient velocity를 만든다.
+    """camera-frame target ray로 보수적 high-level velocity를 만든다.
 
     D435i→base extrinsic의 yaw/FR lateral offset이 아직 고정 보정되지 않았으므로,
     기본값은 yaw+forward staging만 한다. lateral Move는 명시적 opt-in이다.
@@ -146,12 +147,12 @@ def plan_command(state: Perception, args: argparse.Namespace) -> tuple[float, fl
 def require_sdk() -> tuple[Any, Any, Any, Any, Any]:
     try:
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-        from unitree_sdk2py.go2.sport.sport_client import SportClient
+        from unitree_sdk2py.go2.obstacles_avoid.obstacles_avoid_client import ObstaclesAvoidClient
         from unitree_sdk2py.idl.nav_msgs.msg.dds_ import Odometry_
         from unitree_sdk2py.idl.unitree_go.msg.dds_ import WirelessController_
     except ImportError as error:
         raise RuntimeError("unitree_sdk2py SDK environment가 필요합니다: {}".format(error)) from error
-    return ChannelFactoryInitialize, ChannelSubscriber, SportClient, Odometry_, WirelessController_
+    return ChannelFactoryInitialize, ChannelSubscriber, ObstaclesAvoidClient, Odometry_, WirelessController_
 
 
 def result_code(result: Any) -> int:
@@ -173,6 +174,8 @@ def main() -> int:
     parser.add_argument("--tag-id", type=int, required=True)
     parser.add_argument("--execute", action="store_true", help="없으면 command plan만 출력한다")
     parser.add_argument("--operator-confirm", help="--execute에는 {} 필요".format(CONFIRMATION))
+    parser.add_argument("--disable-obstacle-avoidance", action="store_true",
+                        help="공을 goal로 접근하기 위한 explicit opt-in; 종료 시 이전 setting으로 복구")
     parser.add_argument("--max-runtime-s", type=float, default=8.0)
     parser.add_argument("--tick-hz", type=float, default=10.0)
     parser.add_argument("--perception-max-age-s", type=float, default=0.35)
@@ -199,6 +202,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
         parser.error("--execute에는 --operator-confirm {} 필요".format(CONFIRMATION))
+    if args.execute and not args.disable_obstacle_avoidance:
+        parser.error("--execute에는 --disable-obstacle-avoidance가 필요합니다")
     if not 0.0 < args.tick_hz <= 30.0 or args.max_runtime_s <= 0.0:
         parser.error("--tick-hz/max-runtime-s 범위를 확인하세요")
     if not 0.30 <= args.stop_ball_range_m <= 2.0:
@@ -207,16 +212,29 @@ def main() -> int:
            args.range_progress_s, args.min_range_progress_m) <= 0.0:
         parser.error("motion/range watchdog 값은 양수여야 합니다")
 
-    ChannelFactoryInitialize, ChannelSubscriber, SportClient, Odometry_, WirelessController_ = require_sdk()
+    ChannelFactoryInitialize, ChannelSubscriber, ObstaclesAvoidClient, Odometry_, WirelessController_ = require_sdk()
     odom, remote = OdomStore(), RemoteLatch(args.remote_deadzone)
     ChannelFactoryInitialize(0, args.interface)
     odom_subscriber = ChannelSubscriber("rt/utlidar/robot_odom", Odometry_)
     remote_subscriber = ChannelSubscriber("rt/wirelesscontroller", WirelessController_)
     odom_subscriber.Init(odom.update, 10)
     remote_subscriber.Init(remote.update, 10)
-    sport = SportClient()
-    sport.SetTimeout(1.0)
-    sport.Init()
+    avoid = ObstaclesAvoidClient()
+    avoid.SetTimeout(1.0)
+    avoid.Init()
+    previous_avoidance: Optional[bool] = None
+    if args.execute:
+        switch_code, previous_avoidance = avoid.SwitchGet()
+        if result_code(switch_code) != 0 or previous_avoidance is None:
+            raise RuntimeError("ObstaclesAvoidClient.SwitchGet failed code={}".format(switch_code))
+        code = result_code(avoid.SwitchSet(False))
+        if code != 0:
+            raise RuntimeError("ObstaclesAvoidClient.SwitchSet(False) failed code={}".format(code))
+        code = result_code(avoid.UseRemoteCommandFromApi(True))
+        if code != 0:
+            avoid.SwitchSet(previous_avoidance)
+            raise RuntimeError("ObstaclesAvoidClient.UseRemoteCommandFromApi(True) failed code={}".format(code))
+        print("OBSTACLE_AVOIDANCE_OVERRIDE previous={} current=False api_control=True".format(previous_avoidance), flush=True)
 
     print(
         "APPROACH_READY execute={} tag={} perception={} max_runtime_s={}".format(
@@ -228,8 +246,8 @@ def main() -> int:
     start_position: Optional[tuple[float, float, float]] = None
     advance_started_at: Optional[float] = None
     advance_start_position: Optional[tuple[float, float, float]] = None
-    advance_start_range: Optional[float] = None
-    best_range: Optional[float] = None
+    range_anchor_m: Optional[float] = None
+    last_range_progress_at: Optional[float] = None
     last_telemetry_at = float("-inf")
     try:
         while time.monotonic() - start < args.max_runtime_s:
@@ -258,25 +276,27 @@ def main() -> int:
                     if advance_started_at is None:
                         advance_started_at = now
                         advance_start_position = position
-                        advance_start_range = perception.ball_range_m
-                        best_range = perception.ball_range_m
+                        range_anchor_m = perception.ball_range_m
+                        last_range_progress_at = now
                     else:
-                        best_range = min(best_range if best_range is not None else perception.ball_range_m,
-                                         perception.ball_range_m)
                         elapsed = now - advance_started_at
                         moved = planar_distance(advance_start_position, position)
                         if elapsed >= args.motion_confirm_s and (moved is None or moved < args.min_motion_progress_m):
                             reason, command = "motion_not_confirmed", (0.0, 0.0, 0.0)
-                        elif elapsed >= args.range_progress_s and (
-                            advance_start_range is None or best_range is None
-                            or advance_start_range - best_range < args.min_range_progress_m
+                        elif range_anchor_m is not None and perception.ball_range_m <= (
+                            range_anchor_m - args.min_range_progress_m
                         ):
+                            # 최초 5 cm 전진 뒤 멈춘 경우처럼, 전체 시작점과 비교하면
+                            # watchdog이 영구 통과한다. 마지막 실제 range 감소 시점부터 다시 잰다.
+                            range_anchor_m = perception.ball_range_m
+                            last_range_progress_at = now
+                        elif last_range_progress_at is None or now - last_range_progress_at >= args.range_progress_s:
                             reason, command = "ball_range_no_progress", (0.0, 0.0, 0.0)
                 else:
                     advance_started_at = None
                     advance_start_position = None
-                    advance_start_range = None
-                    best_range = None
+                    range_anchor_m = None
+                    last_range_progress_at = None
             if reason != last_reason:
                 print(
                     "STATE reason={} command=[{:.3f},{:.3f},{:.3f}]".format(reason, *command),
@@ -295,13 +315,13 @@ def main() -> int:
                 last_telemetry_at = now
             if args.execute:
                 if reason in ("advance", "align"):
-                    code = result_code(sport.Move(*command))
+                    code = result_code(avoid.Move(*command))
                     if code != 0:
-                        sport.StopMove()
+                        avoid.Move(0.0, 0.0, 0.0)
                         print("APPROACH_STOP reason=move_rejected code={}".format(code), flush=True)
                         return 2
                 else:
-                    sport.StopMove()
+                    avoid.Move(0.0, 0.0, 0.0)
                     if reason in (
                         "staging_ready", "remote_preempted", "perception_missing", "perception_stale", "odom_stale",
                         "travel_limit", "motion_not_confirmed", "ball_range_no_progress",
@@ -309,13 +329,16 @@ def main() -> int:
                         print("APPROACH_STOP reason={}".format(reason), flush=True)
                         return 0 if reason == "staging_ready" else 2
             else:
-                # preview에서는 어떤 SportClient movement API도 호출하지 않는다.
+                # preview에서는 어떤 robot movement API도 호출하지 않는다.
                 if reason == "staging_ready":
                     return 0
             time.sleep(period)
     finally:
         if args.execute:
-            sport.StopMove()
+            avoid.Move(0.0, 0.0, 0.0)
+            avoid.UseRemoteCommandFromApi(False)
+            if previous_avoidance is not None:
+                avoid.SwitchSet(previous_avoidance)
     print("APPROACH_STOP reason=runtime_expired", flush=True)
     return 2
 
