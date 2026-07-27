@@ -311,3 +311,49 @@ python3 scripts/export_vendor_go2_fr_kick_teacher.py \
   --output hardware_measurements/go2_fr_kick_teacher_x10.npz \
   --fr-forward-extension-m 0.10
 ```
+
+
+## 공/Tag 정렬 staging 보행
+
+`approach_ball_to_tag.py`는 D435i stream의 `state.json`과 내장 LiDAR DDS odometry를
+함께 읽고 MCF `SportClient.Move`로 **공/Tag가 아직 camera에 보이는 staging 위치까지만**
+접근한다. frozen FR LowCmd kick을 호출하거나 MotionSwitcher ownership을 바꾸지 않는다.
+physical remote의 stick/button 입력, odom/perception stale, 공/Tag loss, timeout은 모두
+`StopMove()`로 즉시 중단하며, remote input 뒤에는 process가 자동 재개하지 않는다.
+
+먼저 D435 perception terminal에서 stream을 유지한다.
+
+```bash
+cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-perception-py38
+unset PYTHONPATH
+python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
+  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 --confidence 0.015
+```
+
+다른 SDK terminal에서 먼저 dry-run command plan을 확인한다. 이 명령은
+`SportClient.Move`를 호출하지 않는다.
+
+```bash
+cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-unitree-sdk-py311
+unset PYTHONPATH
+python hardware/go2_edu_stationary_kick/approach_ball_to_tag.py --interface eth0 --tag-id 11
+```
+
+`STATE reason=advance`가 안정적으로 보인 뒤, harness/E-stop과 clear zone을 준비하고
+아래처럼 명시적으로 arm한다. 기본 최대 속도는 `0.08 m/s`, 최대 30초이며 공 camera range
+`0.55m`에서 멈춘다. 이 위치는 final FR kick lane이 아니라 다음 docking calibration의
+안전 staging 위치다.
+
+```bash
+python hardware/go2_edu_stationary_kick/approach_ball_to_tag.py \
+  --interface eth0 --tag-id 11 --execute \
+  --operator-confirm SPORT_APPROACH_READY
+```
+
+camera optical-frame lateral 값만으로는 FR foot의 physical lateral offset을 증명할 수
+없으므로, `--enable-lateral`은 기본 비활성이다. 이 옵션은 FR lane 실측 보정 뒤에만 쓴다.
+이것이 없는 상태에서 final LowCmd kick을 자동 연결하는 것은 금지한다.
