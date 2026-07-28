@@ -8,10 +8,10 @@
 
 실행은 연속 보행이 아닌 ``짧은 virtual joystick pulse -> neutral 3회 -> 재관측``이다.
 각 cycle에서 D435i state freshness, ball/Tag geometry, MCF stand state, LiDAR odometry,
-start-pose 기준 travel hard limit을 모두 검사한다. physical remote 입력이 WebRTC
-subscription에서 보이면 즉시 neutral을 보내고 이번 process는 종료한다. own virtual
-joystick echo가 input으로 보이는 firmware에서도 같은 fail-closed 동작을 하므로, 그것은
-보행 성공으로 해석하지 않는다.
+start-pose 기준 travel hard limit을 모두 검사한다. 이 firmware의 WebRTC subscriber는
+physical remote input을 전달하지 않으므로, 별도 direct-DDS watchdog의 fresh heartbeat와
+input proof를 실행 전 요구한다. watchdog의 localhost UDP event 또는 상태 파일에서 실제
+remote input이 보이면 다음 packet 전에 neutralize하고 이번 process를 종료한다.
 
 출처: legion1581/unitree_webrtc_connect v2.1.2,
 https://github.com/legion1581/unitree_webrtc_connect
@@ -51,6 +51,9 @@ STAGE_RANGE_MIN_M = 0.65
 STAGE_RANGE_MAX_M = 0.85
 MAX_TRAVEL_M = 0.35
 MAX_CYCLES = 5
+DIRECT_REMOTE_MAX_STATUS_AGE_S = 0.35
+DIRECT_REMOTE_HOLD_S = 0.60
+DIRECT_REMOTE_UDP_PORT = 18181
 CONFIRMATION = "MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY"
 
 
@@ -237,43 +240,65 @@ def state_is_safe_to_walk(state: dict[str, Any] | None) -> tuple[bool, str]:
     return True, "mcf_stand_preflight_pass"
 
 
-class RemoteLatch:
-    """어떤 non-neutral controller 입력도 이번 autonomous stage를 fail-closed로 끝낸다."""
+@dataclass(frozen=True)
+class DirectRemoteWatchdog:
+    """별도 SDK environment의 direct DDS watcher가 남긴 상태다."""
 
-    def __init__(self, deadzone: float) -> None:
-        self.deadzone = deadzone
+    heartbeat_monotonic_s: float
+    event_count: int
+    last_active_monotonic_s: float | None
+    last_event: dict[str, Any] | None
+
+
+class DirectRemoteLatch(asyncio.DatagramProtocol):
+    """direct DDS watcher가 보내는 localhost UDP physical-input event를 즉시 저장한다."""
+
+    def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
 
-    def update(self, message: Any, elapsed_s: float) -> None:
-        data = unwrap_data(message)
-        if data is None:
-            return
+    def datagram_received(self, data: bytes, _address: Any) -> None:
         try:
-            lx, ly, rx, ry = (float(data.get(key, 0.0)) for key in ("lx", "ly", "rx", "ry"))
-            keys = int(data.get("keys", 0))
-        except (TypeError, ValueError):
+            event = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
             return
-        if max(abs(lx), abs(ly), abs(rx), abs(ry)) > self.deadzone or keys != 0:
-            self.events.append({"elapsed_s": elapsed_s, "lx": lx, "ly": ly, "rx": rx, "ry": ry, "keys": keys})
+        if isinstance(event, dict):
+            self.events.append(event)
 
     def tripped(self) -> bool:
         return bool(self.events)
 
 
-def load_remote_evidence(path: Path) -> tuple[bool, str]:
-    """실행 전 read-only probe가 실제 physical input을 본 log만 허용한다."""
+def load_direct_remote_watchdog(
+    path: Path | None, *, max_age_s: float, hold_s: float
+) -> tuple[DirectRemoteWatchdog | None, str]:
+    """direct DDS watchdog heartbeat와 actual physical-input proof를 fail-closed로 확인한다."""
+    if path is None:
+        return None, "direct_remote_watchdog_required"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        return False, "remote_evidence_unreadable:{}".format(error)
-    result = payload.get("result") if isinstance(payload, dict) else None
-    if not isinstance(result, dict):
-        return False, "remote_evidence_missing_result"
-    if payload.get("motion_commands_sent") is not False:
-        return False, "remote_evidence_not_read_only"
-    if result.get("physical_input_observed") is not True or result.get("verdict") != "PHYSICAL_INPUT_OBSERVED":
-        return False, "remote_evidence_no_physical_input"
-    return True, "remote_evidence_pass"
+        return None, "direct_remote_watchdog_unreadable:{}".format(error)
+    if not isinstance(payload, dict) or payload.get("kind") != "go2_direct_dds_physical_remote_watchdog":
+        return None, "direct_remote_watchdog_invalid_kind"
+    try:
+        heartbeat = float(payload["heartbeat_monotonic_s"])
+        event_count = int(payload["physical_input_event_count"])
+        last_active_value = payload.get("last_active_monotonic_s")
+        last_active = None if last_active_value is None else float(last_active_value)
+    except (KeyError, TypeError, ValueError):
+        return None, "direct_remote_watchdog_missing_fields"
+    if payload.get("ready") is not True or payload.get("motion_commands_sent") is not False:
+        return None, "direct_remote_watchdog_not_read_only_ready"
+    now = time.monotonic()
+    if not math.isfinite(heartbeat) or now - heartbeat > max_age_s:
+        return None, "direct_remote_watchdog_stale"
+    if event_count < 1 or last_active is None or not math.isfinite(last_active):
+        return None, "direct_remote_input_not_proven"
+    if now - last_active < hold_s:
+        return None, "physical_remote_active"
+    last_event = payload.get("last_event")
+    return DirectRemoteWatchdog(heartbeat, event_count, last_active, last_event if isinstance(last_event, dict) else None), \
+        "direct_remote_watchdog_pass"
 
 
 def load_fr_lane_template(path: Path | None, tag_id: int) -> tuple[FrLaneTemplate | None, str]:
@@ -349,15 +374,24 @@ async def neutralize(pub_sub: Any, topic: str) -> int:
 
 
 async def joystick_pulse(
-    pub_sub: Any, topic: str, *, lx: float, ly: float, rx: float, duration_s: float, latch: RemoteLatch
+    pub_sub: Any, topic: str, *, lx: float, ly: float, rx: float, duration_s: float,
+    direct_latch: DirectRemoteLatch, args: argparse.Namespace,
 ) -> tuple[int, int, str]:
-    """partial burst도 항상 neutralize한다. controller event는 다음 packet 전에 stop한다."""
+    """partial burst도 neutralize한다. direct DDS remote input은 다음 packet 전에 stop한다."""
     packets = 0
     termination = "pulse_complete"
     try:
         for _ in range(math.ceil(duration_s * COMMAND_RATE_HZ)):
-            if latch.tripped():
-                termination = "remote_preempted"
+            watchdog, watchdog_reason = load_direct_remote_watchdog(
+                args.direct_remote_status,
+                max_age_s=args.direct_remote_max_age_s,
+                hold_s=args.direct_remote_hold_s,
+            )
+            if direct_latch.tripped() or watchdog_reason == "physical_remote_active":
+                termination = "physical_remote_preempted"
+                break
+            if watchdog is None:
+                termination = "direct_remote_watchdog_lost:{}".format(watchdog_reason)
                 break
             publish_joystick(pub_sub, topic, lx=lx, ly=ly, rx=rx)
             packets += 1
@@ -375,9 +409,16 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("unitree_webrtc_connect import 실패: {}".format(error)) from error
 
     if args.execute:
-        evidence_ok, evidence_reason = load_remote_evidence(args.remote_preempt_evidence)
-        if not evidence_ok:
-            return {"connected": False, "execute": True, "motion_commands_sent": False, "verdict": "REMOTE_EVIDENCE_REJECTED", "reason": evidence_reason}
+        watchdog, watchdog_reason = load_direct_remote_watchdog(
+            args.direct_remote_status,
+            max_age_s=args.direct_remote_max_age_s,
+            hold_s=args.direct_remote_hold_s,
+        )
+        if watchdog is None:
+            return {
+                "connected": False, "execute": True, "motion_commands_sent": False,
+                "verdict": "DIRECT_REMOTE_WATCHDOG_REJECTED", "reason": watchdog_reason,
+            }
 
     lane_template, template_reason = load_fr_lane_template(args.fr_lane_template, args.tag_id)
     if args.execute and lane_template is None:
@@ -389,11 +430,24 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     connection = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=args.robot_ip)
     sport_states: list[dict[str, Any]] = []
     odom_poses: list[dict[str, float]] = []
-    remote_latch = RemoteLatch(args.remote_deadzone)
+    direct_latch = DirectRemoteLatch()
+    udp_transport: asyncio.DatagramTransport | None = None
     connected_at = 0.0
     command_packets = 0
     neutral_packets = 0
     try:
+        if args.execute:
+            loop = asyncio.get_running_loop()
+            try:
+                udp_transport, _ = await loop.create_datagram_endpoint(
+                    lambda: direct_latch,
+                    local_addr=("127.0.0.1", args.direct_remote_udp_port),
+                )
+            except OSError as error:
+                return {
+                    "connected": False, "execute": True, "motion_commands_sent": False,
+                    "verdict": "DIRECT_REMOTE_UDP_BIND_FAILED", "reason": str(error),
+                }
         await asyncio.wait_for(connection.connect(), timeout=args.connect_timeout_s)
         connected_at = time.monotonic()
 
@@ -405,26 +459,28 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if pose is not None:
                 odom_poses.append(pose)
 
-        def on_wireless(message: Any) -> None:
-            remote_latch.update(message, time.monotonic() - connected_at)
-
         pub_sub = connection.datachannel.pub_sub
         pub_sub.subscribe(RTC_TOPIC["LF_SPORT_MOD_STATE"], on_sport_state)
         pub_sub.subscribe(RTC_TOPIC["ROBOTODOM"], on_robot_pose)
-        pub_sub.subscribe(RTC_TOPIC["WIRELESS_CONTROLLER"], on_wireless)
         await asyncio.sleep(STATE_SETTLE_S)
         initial_state = sport_states[-1] if sport_states else None
         state_ok, state_reason = state_is_safe_to_walk(initial_state)
         baseline, baseline_span_m = static_baseline(odom_poses)
         odom_ok = baseline is not None and baseline_span_m <= args.max_static_baseline_span_m
         perception, perception_reason = await stable_perception(args)
+        watchdog, watchdog_reason = load_direct_remote_watchdog(
+            args.direct_remote_status,
+            max_age_s=args.direct_remote_max_age_s,
+            hold_s=args.direct_remote_hold_s,
+        )
+        direct_remote_ok = (not args.execute) or (watchdog is not None and not direct_latch.tripped())
         result: dict[str, Any] = {
             "connected": True,
             "robot_ip": args.robot_ip,
             "execute": args.execute,
             "motion_commands_sent": False,
             "preflight": {
-                "ok": state_ok and odom_ok and perception is not None and lane_template is not None and not remote_latch.tripped(),
+                "ok": state_ok and odom_ok and perception is not None and lane_template is not None and direct_remote_ok,
                 "mcf_state_reason": state_reason,
                 "sport_state": initial_state,
                 "odom_baseline": baseline,
@@ -434,10 +490,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "perception": None if perception is None else asdict(perception),
                 "fr_lane_template_reason": template_reason,
                 "fr_lane_template": None if lane_template is None else asdict(lane_template),
-                "remote_events_before_command": remote_latch.events,
+                "direct_remote_watchdog_reason": watchdog_reason,
+                "direct_remote_watchdog": None if watchdog is None else asdict(watchdog),
+                "direct_remote_events_before_command": direct_latch.events,
             },
             "command_contract": {
                 "transport": "WebRTC rt/wirelesscontroller only",
+                "physical_remote_guard": "direct DDS watcher heartbeat + localhost UDP event",
                 "joystick_magnitude": args.joystick_magnitude,
                 "rate_hz": COMMAND_RATE_HZ,
                 "forward_pulse_s": args.forward_pulse_s,
@@ -465,8 +524,17 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             return result
 
         for cycle_index in range(args.max_cycles):
-            if remote_latch.tripped():
-                result["verdict"] = "REMOTE_PREEMPTED"
+            watchdog, watchdog_reason = load_direct_remote_watchdog(
+                args.direct_remote_status,
+                max_age_s=args.direct_remote_max_age_s,
+                hold_s=args.direct_remote_hold_s,
+            )
+            if direct_latch.tripped() or watchdog_reason == "physical_remote_active":
+                result["verdict"] = "PHYSICAL_REMOTE_PREEMPTED"
+                break
+            if watchdog is None:
+                result["verdict"] = "DIRECT_REMOTE_WATCHDOG_LOST"
+                result["reason"] = watchdog_reason
                 break
             perception, perception_reason = await stable_perception(args)
             latest_pose = odom_poses[-1] if odom_poses else None
@@ -499,21 +567,25 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             duration_s = args.forward_pulse_s if reason == "forward" else args.turn_pulse_s
             sent, neutral, pulse_result = await joystick_pulse(
                 pub_sub, RTC_TOPIC["WIRELESS_CONTROLLER"], lx=lx, ly=ly, rx=rx,
-                duration_s=duration_s, latch=remote_latch,
+                duration_s=duration_s, direct_latch=direct_latch, args=args,
             )
             command_packets += sent
             neutral_packets += neutral
             cycle.update({"duration_s": duration_s, "packets_sent": sent, "neutral_packets": neutral, "pulse_result": pulse_result})
             result["motion_commands_sent"] = result["motion_commands_sent"] or sent > 0
-            if pulse_result == "remote_preempted":
-                result["verdict"] = "REMOTE_PREEMPTED"
+            if pulse_result == "physical_remote_preempted":
+                result["verdict"] = "PHYSICAL_REMOTE_PREEMPTED"
+                break
+            if pulse_result.startswith("direct_remote_watchdog_lost:"):
+                result["verdict"] = "DIRECT_REMOTE_WATCHDOG_LOST"
+                result["reason"] = pulse_result
                 break
             await asyncio.sleep(args.reobserve_settle_s)
         else:
             result["verdict"] = "CYCLE_LIMIT_REACHED"
         result["command_packets_sent"] = command_packets
         result["neutral_packets_sent"] = neutral_packets
-        result["remote_events"] = remote_latch.events
+        result["direct_remote_events"] = direct_latch.events
         result["final_odom_pose"] = odom_poses[-1] if odom_poses else None
         if odom_poses:
             result["final_travel_m"] = planar_distance(baseline, odom_poses[-1])
@@ -525,6 +597,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             except Exception:
                 pass
         await connection.disconnect()
+        if udp_transport is not None:
+            udp_transport.close()
 
 
 def main() -> int:
@@ -538,7 +612,13 @@ def main() -> int:
     )
     parser.add_argument("--execute", action="store_true", help="없으면 read-only dry-run plan만 만든다")
     parser.add_argument("--operator-confirm", default="")
-    parser.add_argument("--remote-preempt-evidence", type=Path, default=None)
+    parser.add_argument(
+        "--direct-remote-status", type=Path, default=None,
+        help="watch_go2_physical_remote_dds.py가 갱신하는 fresh direct-DDS watchdog JSON",
+    )
+    parser.add_argument("--direct-remote-udp-port", type=int, default=DIRECT_REMOTE_UDP_PORT)
+    parser.add_argument("--direct-remote-max-age-s", type=float, default=DIRECT_REMOTE_MAX_STATUS_AGE_S)
+    parser.add_argument("--direct-remote-hold-s", type=float, default=DIRECT_REMOTE_HOLD_S)
     parser.add_argument("--connect-timeout-s", type=float, default=12.0)
     parser.add_argument("--http-timeout-s", type=float, default=0.25)
     parser.add_argument("--perception-max-age-s", type=float, default=MAX_PERCEPTION_AGE_S)
@@ -559,13 +639,12 @@ def main() -> int:
     parser.add_argument("--max-cycles", type=int, default=MAX_CYCLES)
     parser.add_argument("--max-static-baseline-span-m", type=float, default=MAX_STATIC_BASELINE_SPAN_M)
     parser.add_argument("--max-odom-stale-s", type=float, default=MAX_ODOM_STALE_S)
-    parser.add_argument("--remote-deadzone", type=float, default=0.15)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     if args.execute and args.operator_confirm != CONFIRMATION:
         parser.error("--execute에는 --operator-confirm {}가 정확히 필요합니다".format(CONFIRMATION))
-    if args.execute and args.remote_preempt_evidence is None:
-        parser.error("--execute에는 read-only --remote-preempt-evidence JSON이 필요합니다")
+    if args.execute and args.direct_remote_status is None:
+        parser.error("--execute에는 fresh --direct-remote-status JSON이 필요합니다")
     if args.execute and args.fr_lane_template is None:
         parser.error("--execute에는 --fr-lane-template JSON이 필요합니다")
     if not 0.0 < args.joystick_magnitude <= 0.20:
@@ -574,8 +653,11 @@ def main() -> int:
         parser.error("stage range는 D435i valid range 안의 min < max여야 합니다")
     if args.observation_count < 3 or args.max_cycles < 1:
         parser.error("observation-count는 3 이상이고 max-cycles는 1 이상이어야 합니다")
-    if min(args.forward_pulse_s, args.turn_pulse_s, args.reobserve_settle_s, args.max_travel_m, args.max_odom_stale_s) <= 0.0:
-        parser.error("pulse/settle/travel/stale 값은 양수여야 합니다")
+    if min(
+        args.forward_pulse_s, args.turn_pulse_s, args.reobserve_settle_s, args.max_travel_m,
+        args.max_odom_stale_s, args.direct_remote_max_age_s, args.direct_remote_hold_s,
+    ) <= 0.0 or not 1 <= args.direct_remote_udp_port <= 65535:
+        parser.error("pulse/settle/travel/stale/direct-remote 값은 양수 범위여야 합니다")
 
     payload: dict[str, Any] = {
         "schema_version": 1,
