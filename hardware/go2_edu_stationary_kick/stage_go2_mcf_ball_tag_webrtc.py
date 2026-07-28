@@ -45,8 +45,8 @@ COMMAND_RATE_HZ = 50.0
 # odometry progress gate가 목표 거리에서 pulse 도중 먼저 neutralize한다.
 FORWARD_PULSE_S = 2.00
 MAX_FORWARD_PULSE_TRAVEL_M = 0.12
-FINAL_DOCK_MAX_M = 0.60
-FINAL_DOCK_MAX_DURATION_S = 4.0
+FINAL_DOCK_MAX_M = 0.85
+FINAL_DOCK_MAX_DURATION_S = 5.0
 # 0.20 s는 이 실물에서 gait initiation 전에 끝날 수 있었다. yaw도 한 번의 bounded
 # observation pulse가 필요하므로, magnitude는 그대로 두고 duration만 0.50 s로 둔다.
 TURN_PULSE_S = 0.50
@@ -101,6 +101,7 @@ class Perception:
     age_s: float
     ball_detection_age_s: float
     ball_ground_range_m: float
+    ball_ground_forward_m: float
 
 
 @dataclass(frozen=True)
@@ -174,7 +175,29 @@ def fetch_perception_with_reason(
     ball_ground_range = math.sqrt(sum(
         (ball_ground[index] - camera_ground[index]) ** 2 for index in range(3)
     ))
-    if not math.isfinite(ball_ground_range) or ball_ground_range <= 0.0:
+    target_normal_component = sum(
+        target_unit[index] * plane_normal[index] for index in range(3)
+    )
+    target_ground = tuple(
+        target_unit[index] - target_normal_component * plane_normal[index]
+        for index in range(3)
+    )
+    target_ground_norm = math.sqrt(sum(component * component for component in target_ground))
+    if target_ground_norm > 0.0:
+        target_ground = tuple(component / target_ground_norm for component in target_ground)
+    camera_to_ball_ground = tuple(
+        ball_ground[index] - camera_ground[index] for index in range(3)
+    )
+    ball_ground_forward = sum(
+        camera_to_ball_ground[index] * target_ground[index] for index in range(3)
+    )
+    if (
+        not math.isfinite(ball_ground_range)
+        or not math.isfinite(ball_ground_forward)
+        or ball_ground_range <= 0.0
+        or target_ground_norm <= 1e-6
+        or ball_ground_forward <= 0.0
+    ):
         return None, "ball_ground_range_invalid"
     # RealSense optical frame: +x image-right, +z forward. y는 floor plane vertical 성분이다.
     return Perception(
@@ -186,6 +209,7 @@ def fetch_perception_with_reason(
         age_s=time.monotonic() - stamp,
         ball_detection_age_s=detection_age,
         ball_ground_range_m=ball_ground_range,
+        ball_ground_forward_m=ball_ground_forward,
     ), "perception_sample_valid"
 
 
@@ -455,12 +479,13 @@ def fr_lane_bearing_errors(perception: Perception, lane: FrLaneTemplate) -> dict
 
 
 def final_dock_plan(perception: Perception, args: argparse.Namespace) -> dict[str, float]:
-    """바닥 평면 거리에서 camera ground projection→FR→ball center 목표를 뺀다."""
-    desired_ground_range = args.camera_to_fr_forward_m + args.fr_to_ball_forward_m
+    """ball→Tag ground 축의 forward에서 signed camera→FR→ball 목표를 뺀다."""
+    desired_forward = args.camera_to_fr_forward_m + args.fr_to_ball_forward_m
     return {
         "observed_ball_ground_range_m": perception.ball_ground_range_m,
-        "desired_final_ball_ground_range_m": desired_ground_range,
-        "forward_m": max(0.0, perception.ball_ground_range_m - desired_ground_range),
+        "observed_ball_ground_forward_m": perception.ball_ground_forward_m,
+        "desired_final_ball_ground_forward_m": desired_forward,
+        "forward_m": max(0.0, perception.ball_ground_forward_m - desired_forward),
     }
 
 
@@ -1044,14 +1069,14 @@ def main() -> int:
     if not 0.50 <= args.forward_pulse_s <= 2.0:
         parser.error("forward-pulse-s는 [0.50, 2.0] 범위여야 합니다")
     if args.enable_final_dock and not (
-        0.0 < args.camera_to_fr_forward_m <= 0.40
+        -0.40 <= args.camera_to_fr_forward_m <= 0.40
         and 0.0 < args.fr_to_ball_forward_m <= 0.40
     ):
-        parser.error("final dock에는 양수 camera-to-FR/fr-to-ball forward 실측값이 필요합니다")
+        parser.error("final dock camera-to-FR은 signed, FR-to-ball은 양수 forward 실측값이어야 합니다")
     if not 0.05 <= args.final_dock_max_m <= FINAL_DOCK_MAX_M:
-        parser.error("final-dock-max-m은 [0.05, 0.60] 범위여야 합니다")
+        parser.error("final-dock-max-m은 [0.05, 0.85] 범위여야 합니다")
     if not 1.0 <= args.final_dock_max_duration_s <= FINAL_DOCK_MAX_DURATION_S:
-        parser.error("final-dock-max-duration-s는 [1.0, 4.0] 범위여야 합니다")
+        parser.error("final-dock-max-duration-s는 [1.0, 5.0] 범위여야 합니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
         parser.error("stage range는 D435i valid range 안의 min < max여야 합니다")
     if args.observation_count < 3 or args.max_cycles < 1 or args.max_lateral_probe_attempts < 1:
