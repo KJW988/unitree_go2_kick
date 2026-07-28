@@ -205,9 +205,10 @@ bounded retry는 5초다. 즉 짧은 frame drop만 흡수하고 장시간 공이
 보내지 않는다. pulse 시작 LiDAR yaw로 투영한 odometry가 매 cycle 목표(기본 최대 0.12m)에
 도달하면 그 packet loop 안에서 즉시 neutralize한다.
 
-명시 `--enable-final-dock`에서는 camera staging의 마지막 floor plane으로 camera ground
-projection→ball center 거리를 계산한다. 여기서 실측 camera→FR forward와 FR→ball-center
-forward 합을 빼고, 남은 거리만 최대 4초/0.60m의 continuous joystick으로 보낸다. physical
+명시 `--enable-final-dock`에서는 camera staging의 마지막 floor plane에서 ball→Tag 방향을
+ground forward 축으로 만들고 camera ground projection→ball center를 그 축에 투영한다.
+여기서 signed camera→FR forward와 양수 FR→ball-center forward 합을 빼고, 남은 거리만
+최대 5초/0.85m의 continuous joystick으로 보낸다. physical
 remote watchdog과 odometry stale gate는 계속 적용되며 `FINAL_DOCKING_READY`가 아니면 통합
 runner가 LowCmd kick을 호출하지 않는다.
 
