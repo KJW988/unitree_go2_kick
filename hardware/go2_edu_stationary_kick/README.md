@@ -214,9 +214,12 @@ camera ground projection→FR은 robot 전방을 `+`, 뒤쪽을 `-`로 넣고 FR
 FR→ball은 `+0.15`다.
 
 실물 최종 dock에서 FR→ball 약 0.20m까지 gait를 유지하자 마지막 FR swing이 LowCmd보다
-먼저 공을 접촉했다. 따라서 `--final-gait-to-kick-clearance-m` 기본 0.08m를 추가해 보행은
-kick 목표보다 일찍 끝낸다. `camera→FR=-0.15`, `FR→ball=+0.18`이면 보행 종료 목표는
-camera→ball `+0.11m`, FR→ball `+0.26m`이며 남은 거리는 1.2x FR swing이 담당한다.
+먼저 공을 접촉했다. 첫 contact-safe 보정 실행은 5초 상한에서 목표보다 0.0645m 일찍
+종료해 FR→ball 약 0.3245m가 됐고, 1.2x FR kick은 공을 약하게 접촉했다. operator가 약
+0.03m 추가 접근을 확인했으므로 `--final-gait-to-kick-clearance-m` 기본을 0.11m로 둔다.
+`camera→FR=-0.15`, nominal `FR→ball=+0.18`이면 보행 종료 목표는 camera→ball `+0.14m`,
+FR→ball `+0.29m`다. 같은 실측 속도에서 이 목표까지 약 5.25초가 필요하므로 duration hard
+limit은 6.0초로 늘리되 LiDAR odometry 목표 도달 즉시 neutralize한다.
 neutral 뒤에는 최근 0.40초의 MCF planar/yaw velocity와 LiDAR odometry span이 모두 정지
 gate를 통과해야만 LowCmd child를 시작한다. 이 clearance는 첫 보수값이며 실물 접촉/미접촉
 결과로만 줄인다.
