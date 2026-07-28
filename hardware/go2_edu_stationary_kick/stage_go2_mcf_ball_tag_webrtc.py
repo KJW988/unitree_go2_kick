@@ -46,10 +46,11 @@ COMMAND_RATE_HZ = 50.0
 FORWARD_PULSE_S = 2.00
 MAX_FORWARD_PULSE_TRAVEL_M = 0.12
 FINAL_DOCK_MAX_M = 0.85
-FINAL_DOCK_MAX_DURATION_S = 5.0
-# 실물 로그에서 FR→ball 약 0.20m까지 gait를 유지하자 마지막 FR swing이 공을 먼저
-# 건드렸다. 1.2x FR kick이 남은 약 0.08m를 담당하도록 gait는 더 일찍 neutralize한다.
-FINAL_GAIT_TO_KICK_CLEARANCE_M = 0.08
+FINAL_DOCK_MAX_DURATION_S = 6.0
+# 실물에서 FR→ball 약 0.324m에 정지한 뒤 1.2x FR kick이 공을 약하게 접촉했고,
+# operator가 약 0.03m 추가 접근을 확인했다. gait 접촉 없이 FR→ball 약 0.29m를
+# 목표로 하도록 nominal kick 거리 0.18m에 0.11m clearance를 남긴다.
+FINAL_GAIT_TO_KICK_CLEARANCE_M = 0.11
 FINAL_SETTLE_TIMEOUT_S = 2.0
 FINAL_SETTLE_WINDOW_S = 0.40
 FINAL_SETTLE_MAX_PLANAR_SPEED_M_S = 0.08
@@ -1332,7 +1333,7 @@ def main() -> int:
     if not 0.05 <= args.final_dock_max_m <= FINAL_DOCK_MAX_M:
         parser.error("final-dock-max-m은 [0.05, 0.85] 범위여야 합니다")
     if not 1.0 <= args.final_dock_max_duration_s <= FINAL_DOCK_MAX_DURATION_S:
-        parser.error("final-dock-max-duration-s는 [1.0, 5.0] 범위여야 합니다")
+        parser.error("final-dock-max-duration-s는 [1.0, 6.0] 범위여야 합니다")
     if not 0.05 <= args.final_gait_to_kick_clearance_m <= 0.15:
         parser.error("--final-gait-to-kick-clearance-m은 [0.05, 0.15] 범위여야 합니다")
     if not 1.0 <= args.final_settle_timeout_s <= 3.0:
