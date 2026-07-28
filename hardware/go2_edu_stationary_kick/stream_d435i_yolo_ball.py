@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 COCO_SPORTS_BALL_CLASS_ID = 32
 LETTERBOX_SIZE = 640
+DETECTION_HOLD_S = 0.50
 
 
 def _require_runtime() -> tuple[Any, Any, Any]:
@@ -302,13 +303,18 @@ def main() -> int:
     parser.add_argument("--nms", type=float, default=0.45)
     parser.add_argument("--jpeg-quality", type=int, default=80)
     parser.add_argument("--inference-every", type=int, default=1)
+    parser.add_argument(
+        "--detection-hold-s", type=float, default=DETECTION_HOLD_S,
+        help="YOLO 단일-frame miss 때 마지막 bbox를 보존하는 최대 시간; depth는 매 frame 다시 계산한다",
+    )
     parser.add_argument("--tag-size-m", type=float, default=0.152)
     parser.add_argument("--ball-diameter-m", type=float, default=0.22)
     args = parser.parse_args()
     if not (1 <= args.port <= 65535 and min(args.width, args.height, args.fps, args.inference_every) > 0):
         parser.error("port/width/height/fps/inference-every must be positive")
     if not (0.0 < args.confidence <= 1.0 and 0.0 < args.nms <= 1.0 and 1 <= args.jpeg_quality <= 100
-            and args.tag_size_m > 0.0 and args.ball_diameter_m > 0.0):
+            and args.tag_size_m > 0.0 and args.ball_diameter_m > 0.0
+            and 0.0 <= args.detection_hold_s <= 1.0):
         parser.error("confidence/nms/jpeg-quality range is invalid")
 
     cv2, np, rs = _require_runtime()
@@ -329,6 +335,7 @@ def main() -> int:
     config.enable_stream(rs.stream.depth, args.width, args.height, rs.format.z16, args.fps)
     profile = None
     latest_detection: Optional[tuple[int, int, int, int, float]] = None
+    latest_detection_monotonic_s: Optional[float] = None
     try:
         profile = pipeline.start(config)
         depth_scale_m = float(profile.get_device().first_depth_sensor().get_depth_scale())
@@ -346,8 +353,20 @@ def main() -> int:
             if color.shape[:2] != depth.shape[:2]:
                 continue
             count += 1
+            now = time.monotonic()
             if count % args.inference_every == 0:
-                latest_detection = detector.detect(color)
+                current_detection = detector.detect(color)
+                if current_detection is not None:
+                    latest_detection = current_detection
+                    latest_detection_monotonic_s = now
+            detection_age_s = (
+                None if latest_detection_monotonic_s is None
+                else max(0.0, now - latest_detection_monotonic_s)
+            )
+            if detection_age_s is not None and detection_age_s > args.detection_hold_s:
+                latest_detection = None
+                latest_detection_monotonic_s = None
+                detection_age_s = None
             rendered = color.copy()
             tag_ids = _draw_tag_overlay(cv2, rendered)
             intrinsics = color_frame.profile.as_video_stream_profile().intrinsics
@@ -386,6 +405,8 @@ def main() -> int:
                     "surface_camera_xyz_m": ball_surface,
                     "center_camera_xyz_m": ball_center,
                     "ground_camera_xyz_m": ball_ground,
+                    "detection_age_s": detection_age_s,
+                    "detection_held": bool(detection_age_s is not None and detection_age_s > 1.0 / args.fps),
                 }
                 frames.publish(encoded.tobytes(), {
                     "ready": True,
