@@ -17,9 +17,9 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - 0.50초 forward pulse 2회가 실제로는 총 0.030m만 이동한 실물 로그에 따라, forward
   command 상한을 2.0초로 바꾸고 pulse 시작 yaw의 LiDAR odometry가 기본 0.12m 목표에
   도달하면 loop 도중 neutralize하도록 했다.
-- D435i floor plane에서 camera ground projection→ball center 거리를 계산하고, 실측
-  camera→FR 및 FR→ball forward 합까지의 남은 거리를 WebRTC/LiDAR로 닫는 opt-in final
-  docking을 추가했다. 최대 4초/0.60m이며 `FINAL_DOCKING_READY`만 LowCmd 연결을 허용한다.
+- D435i floor plane의 ball→Tag ground 축에 camera→ball을 투영하고, signed camera→FR 및
+  양수 FR→ball forward 합까지의 남은 거리를 WebRTC/LiDAR로 닫는 opt-in final docking을
+  추가했다. 최대 5초/0.85m이며 `FINAL_DOCKING_READY`만 LowCmd 연결을 허용한다.
 
 ## 2026-07-27 — Go2 EDU FR teacher software-only export / dry-run 준비
 
