@@ -40,7 +40,13 @@ from typing import Any
 
 JOYSTICK_MAGNITUDE = 0.20
 COMMAND_RATE_HZ = 50.0
-FORWARD_PULSE_S = 0.50
+# 이 실물에서는 0.50초마다 neutral로 끊으면 gait initiation만 하고 1 pulse당
+# 약 1~2 cm만 이동했다. calibration에서 검증된 2.0초 상한을 쓰되, 아래의
+# odometry progress gate가 목표 거리에서 pulse 도중 먼저 neutralize한다.
+FORWARD_PULSE_S = 2.00
+MAX_FORWARD_PULSE_TRAVEL_M = 0.12
+FINAL_DOCK_MAX_M = 0.60
+FINAL_DOCK_MAX_DURATION_S = 4.0
 # 0.20 s는 이 실물에서 gait initiation 전에 끝날 수 있었다. yaw도 한 번의 bounded
 # observation pulse가 필요하므로, magnitude는 그대로 두고 duration만 0.50 s로 둔다.
 TURN_PULSE_S = 0.50
@@ -94,6 +100,7 @@ class Perception:
     target_distance_m: float
     age_s: float
     ball_detection_age_s: float
+    ball_ground_range_m: float
 
 
 @dataclass(frozen=True)
@@ -132,6 +139,7 @@ def fetch_perception_with_reason(
         return None, "perception_not_ready"
     ball = payload.get("ball")
     target = payload.get("target_line")
+    floor_plane = payload.get("floor_plane_camera")
     if not isinstance(ball, dict):
         return None, "ball_not_detected"
     if not isinstance(target, dict):
@@ -140,25 +148,34 @@ def fetch_perception_with_reason(
         return None, "requested_tag_missing"
     ball_ground = point3(ball.get("ground_camera_xyz_m"))
     target_unit = point3(target.get("unit_camera_xyz"))
+    plane_normal = point3(floor_plane.get("normal")) if isinstance(floor_plane, dict) else None
     try:
         confidence = float(ball["confidence"])
         ball_range = float(ball["depth_range_m"])
         target_distance = float(target["distance_m"])
         stamp = float(payload["stamp_monotonic_s"])
         detection_age = float(ball["detection_age_s"])
+        plane_offset = float(floor_plane["offset"])
     except (KeyError, TypeError, ValueError):
         return None, "perception_fields_invalid"
     if (
         ball_ground is None
         or target_unit is None
+        or plane_normal is None
         or not all(math.isfinite(value) for value in (
-            confidence, ball_range, target_distance, stamp, detection_age,
+            confidence, ball_range, target_distance, stamp, detection_age, plane_offset,
         ))
         or ball_range <= 0.0
         or target_distance < 0.5
         or detection_age < 0.0
     ):
         return None, "perception_geometry_invalid"
+    camera_ground = tuple(-plane_offset * component for component in plane_normal)
+    ball_ground_range = math.sqrt(sum(
+        (ball_ground[index] - camera_ground[index]) ** 2 for index in range(3)
+    ))
+    if not math.isfinite(ball_ground_range) or ball_ground_range <= 0.0:
+        return None, "ball_ground_range_invalid"
     # RealSense optical frame: +x image-right, +z forward. y는 floor plane vertical 성분이다.
     return Perception(
         ball_range_m=ball_range,
@@ -168,6 +185,7 @@ def fetch_perception_with_reason(
         target_distance_m=target_distance,
         age_s=time.monotonic() - stamp,
         ball_detection_age_s=detection_age,
+        ball_ground_range_m=ball_ground_range,
     ), "perception_sample_valid"
 
 
@@ -268,6 +286,13 @@ def static_baseline(poses: list[dict[str, float]]) -> tuple[dict[str, float] | N
 
 def planar_distance(baseline: dict[str, float], pose: dict[str, float]) -> float:
     return math.hypot(pose["x"] - baseline["x"], pose["y"] - baseline["y"])
+
+
+def forward_progress_m(baseline: dict[str, float], pose: dict[str, float]) -> float:
+    """pulse 시작 yaw로 투영한 LiDAR odometry 전진 거리다."""
+    dx = pose["x"] - baseline["x"]
+    dy = pose["y"] - baseline["y"]
+    return dx * math.cos(baseline["yaw_rad"]) + dy * math.sin(baseline["yaw_rad"])
 
 
 def state_is_safe_to_walk(state: dict[str, Any] | None) -> tuple[bool, str]:
@@ -429,6 +454,16 @@ def fr_lane_bearing_errors(perception: Perception, lane: FrLaneTemplate) -> dict
     }
 
 
+def final_dock_plan(perception: Perception, args: argparse.Namespace) -> dict[str, float]:
+    """바닥 평면 거리에서 camera ground projection→FR→ball center 목표를 뺀다."""
+    desired_ground_range = args.camera_to_fr_forward_m + args.fr_to_ball_forward_m
+    return {
+        "observed_ball_ground_range_m": perception.ball_ground_range_m,
+        "desired_final_ball_ground_range_m": desired_ground_range,
+        "forward_m": max(0.0, perception.ball_ground_range_m - desired_ground_range),
+    }
+
+
 def publish_joystick(pub_sub: Any, topic: str, *, lx: float = 0.0, ly: float = 0.0, rx: float = 0.0) -> None:
     pub_sub.publish_without_callback(topic, {"lx": lx, "ly": ly, "rx": rx, "ry": 0.0, "keys": 0})
 
@@ -478,15 +513,31 @@ async def neutralize(pub_sub: Any, topic: str) -> int:
 async def joystick_pulse(
     pub_sub: Any, topic: str, *, lx: float, ly: float, rx: float, duration_s: float,
     direct_latch: DirectRemoteLatch, args: argparse.Namespace,
+    odom_poses: list[dict[str, float]] | None = None,
+    start_pose: dict[str, float] | None = None,
+    stop_after_forward_m: float | None = None,
 ) -> tuple[int, int, str]:
     """partial burst도 neutralize한다. direct DDS remote input은 다음 packet 전에 stop한다."""
     packets = 0
     termination = "pulse_complete"
+    last_pose_count = len(odom_poses) if odom_poses is not None else 0
+    last_odom_at = time.monotonic()
     arm_virtual_echo_window(
         args.virtual_echo_window, lx=lx, ly=ly, rx=rx, duration_s=duration_s,
     )
     try:
         for _ in range(math.ceil(duration_s * COMMAND_RATE_HZ)):
+            if stop_after_forward_m is not None:
+                assert odom_poses is not None and start_pose is not None
+                if len(odom_poses) != last_pose_count:
+                    last_pose_count = len(odom_poses)
+                    last_odom_at = time.monotonic()
+                if time.monotonic() - last_odom_at > args.max_odom_stale_s:
+                    termination = "odom_stale_during_pulse"
+                    break
+                if odom_poses and forward_progress_m(start_pose, odom_poses[-1]) >= stop_after_forward_m:
+                    termination = "forward_odom_target_reached"
+                    break
             watchdog, watchdog_reason = load_direct_remote_watchdog(
                 args.direct_remote_status,
                 max_age_s=args.direct_remote_max_age_s,
@@ -616,6 +667,12 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "rate_hz": COMMAND_RATE_HZ,
                 "observation_timeout_s": args.observation_timeout_s,
                 "forward_pulse_s": args.forward_pulse_s,
+                "max_forward_pulse_travel_m": args.max_forward_pulse_travel_m,
+                "final_dock_enabled": args.enable_final_dock,
+                "camera_to_fr_forward_m": args.camera_to_fr_forward_m,
+                "fr_to_ball_forward_m": args.fr_to_ball_forward_m,
+                "final_dock_max_m": args.final_dock_max_m,
+                "final_dock_max_duration_s": args.final_dock_max_duration_s,
                 "turn_pulse_s": args.turn_pulse_s,
                 "lateral_pulse_s": args.lateral_pulse_s,
                 "lateral_search_opt_in": args.allow_lateral_search,
@@ -654,6 +711,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "joystick": list(first_action[1:]),
                 "fr_lane_bearing_errors": fr_lane_bearing_errors(perception, lane_template),
             }
+            if args.enable_final_dock:
+                result["dry_run_final_dock_plan"] = final_dock_plan(perception, args)
             result["verdict"] = "DRY_RUN_READY"
             return result
 
@@ -734,15 +793,77 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         lane_template.target_bearing_tolerance_rad,
                     )
                 )
-                result["verdict"] = "CAMERA_STAGING_READY"
+                dock_complete = not args.enable_final_dock
+                if args.enable_final_dock:
+                    dock = final_dock_plan(perception, args)
+                    result["final_dock"] = dock
+                    if dock["forward_m"] > args.final_dock_max_m:
+                        result["verdict"] = "FINAL_DOCK_DISTANCE_REJECTED"
+                        result["kick_ready"] = {
+                            "eligible": False,
+                            "reason": "computed final dock exceeds explicit hard limit",
+                        }
+                        break
+                    if dock["forward_m"] <= 0.02:
+                        dock_complete = True
+                        result["final_dock"].update({
+                            "pulse_result": "already_at_final_ground_range",
+                            "measured_forward_m": 0.0,
+                        })
+                    else:
+                        sent, neutral, pulse_result = await joystick_pulse(
+                            pub_sub, RTC_TOPIC["WIRELESS_CONTROLLER"],
+                            lx=0.0, ly=args.joystick_magnitude, rx=0.0,
+                            duration_s=args.final_dock_max_duration_s,
+                            direct_latch=direct_latch, args=args,
+                            odom_poses=odom_poses, start_pose=latest_pose,
+                            stop_after_forward_m=dock["forward_m"],
+                        )
+                        command_packets += sent
+                        neutral_packets += neutral
+                        result["motion_commands_sent"] = result["motion_commands_sent"] or sent > 0
+                        await asyncio.sleep(args.reobserve_settle_s)
+                        final_dock_pose = odom_poses[-1] if odom_poses else None
+                        measured_forward = (
+                            forward_progress_m(latest_pose, final_dock_pose)
+                            if final_dock_pose is not None else float("-inf")
+                        )
+                        dock_complete = measured_forward >= dock["forward_m"] - 0.02
+                        result["final_dock"].update({
+                            "pulse_result": pulse_result,
+                            "packets_sent": sent,
+                            "neutral_packets": neutral,
+                            "start_odom": latest_pose,
+                            "final_odom": final_dock_pose,
+                            "measured_forward_m": measured_forward,
+                            "complete": dock_complete,
+                        })
+                        if pulse_result == "physical_remote_preempted":
+                            result["verdict"] = "PHYSICAL_REMOTE_PREEMPTED"
+                            break
+                        if pulse_result.startswith("direct_remote_watchdog_lost:"):
+                            result["verdict"] = "DIRECT_REMOTE_WATCHDOG_LOST"
+                            result["reason"] = pulse_result
+                            break
+                        if pulse_result == "odom_stale_during_pulse":
+                            result["verdict"] = "ODOM_STALE"
+                            break
+                        if not dock_complete:
+                            result["verdict"] = "FINAL_DOCK_INCOMPLETE"
+                            break
+                result["verdict"] = (
+                    "FINAL_DOCKING_READY" if args.enable_final_dock and dock_complete
+                    else "CAMERA_STAGING_READY"
+                )
                 result["kick_ready"] = {
-                    "eligible": strict_lane_ready,
-                    "geometry_source": "D435i FR lane template",
+                    "eligible": strict_lane_ready and dock_complete,
+                    "geometry_source": "D435i FR lane template + floor-plane range + LiDAR odometry",
                     "lowcmd_started": False,
+                    "final_dock_complete": dock_complete,
                     "reason": (
-                        "strict FR lane geometry passed; MCF_to_LowCmd ownership handoff remains a separate harness action"
-                        if strict_lane_ready else
-                        "rough camera staging only; strict FR lane geometry and LowCmd handoff remain unapproved"
+                        "strict FR lane geometry and bounded final docking passed; MCF_to_LowCmd remains a separate harness action"
+                        if strict_lane_ready and dock_complete else
+                        "rough geometry or incomplete docking; explicit rough-kick opt-in remains required"
                     ),
                 }
                 break
@@ -770,9 +891,23 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 else args.turn_pulse_s if reason == "turn_to_tag_ray"
                 else args.lateral_pulse_s
             )
+            stop_after_forward_m = None
+            if reason == "forward":
+                remaining_to_stage_m = max(
+                    0.0,
+                    perception.ball_range_m
+                    - (lane_template.desired_ball_range_m + lane_template.range_tolerance_m),
+                )
+                stop_after_forward_m = min(
+                    args.max_forward_pulse_travel_m,
+                    max(0.03, remaining_to_stage_m),
+                )
+                cycle["forward_odom_target_m"] = stop_after_forward_m
             sent, neutral, pulse_result = await joystick_pulse(
                 pub_sub, RTC_TOPIC["WIRELESS_CONTROLLER"], lx=lx, ly=ly, rx=rx,
                 duration_s=duration_s, direct_latch=direct_latch, args=args,
+                odom_poses=odom_poses, start_pose=latest_pose,
+                stop_after_forward_m=stop_after_forward_m,
             )
             command_packets += sent
             neutral_packets += neutral
@@ -784,6 +919,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if pulse_result.startswith("direct_remote_watchdog_lost:"):
                 result["verdict"] = "DIRECT_REMOTE_WATCHDOG_LOST"
                 result["reason"] = pulse_result
+                break
+            if pulse_result == "odom_stale_during_pulse":
+                result["verdict"] = "ODOM_STALE"
                 break
             await asyncio.sleep(args.reobserve_settle_s)
         else:
@@ -844,6 +982,24 @@ def main() -> int:
     parser.add_argument("--ball-bearing-tolerance-rad", type=float, default=0.12)
     parser.add_argument("--joystick-magnitude", type=float, default=JOYSTICK_MAGNITUDE)
     parser.add_argument("--forward-pulse-s", type=float, default=FORWARD_PULSE_S)
+    parser.add_argument(
+        "--max-forward-pulse-travel-m", type=float, default=MAX_FORWARD_PULSE_TRAVEL_M,
+        help="한 continuous forward pulse가 odometry로 이동할 수 있는 최대 거리",
+    )
+    parser.add_argument(
+        "--enable-final-dock", action="store_true",
+        help="camera staging 뒤 floor-plane 거리와 LiDAR odometry로 camera-blind final forward를 명시 arm한다",
+    )
+    parser.add_argument(
+        "--camera-to-fr-forward-m", type=float, default=0.0,
+        help="camera ground projection에서 FR center까지 robot-forward signed 거리",
+    )
+    parser.add_argument(
+        "--fr-to-ball-forward-m", type=float, default=0.0,
+        help="검증된 final kick pose에서 FR center에서 ball center까지 forward 거리",
+    )
+    parser.add_argument("--final-dock-max-m", type=float, default=FINAL_DOCK_MAX_M)
+    parser.add_argument("--final-dock-max-duration-s", type=float, default=FINAL_DOCK_MAX_DURATION_S)
     parser.add_argument("--turn-pulse-s", type=float, default=TURN_PULSE_S)
     parser.add_argument(
         "--allow-lateral-search", action="store_true",
@@ -883,6 +1039,19 @@ def main() -> int:
         parser.error("--lateral-sign-confirmed와 --lateral-probe-only는 함께 사용할 수 없습니다")
     if not 0.0 < args.joystick_magnitude <= 0.20:
         parser.error("joystick magnitude는 0보다 크고 0.20 이하여야 합니다")
+    if not 0.03 <= args.max_forward_pulse_travel_m <= 0.15:
+        parser.error("max-forward-pulse-travel-m은 [0.03, 0.15] 범위여야 합니다")
+    if not 0.50 <= args.forward_pulse_s <= 2.0:
+        parser.error("forward-pulse-s는 [0.50, 2.0] 범위여야 합니다")
+    if args.enable_final_dock and not (
+        0.0 < args.camera_to_fr_forward_m <= 0.40
+        and 0.0 < args.fr_to_ball_forward_m <= 0.40
+    ):
+        parser.error("final dock에는 양수 camera-to-FR/fr-to-ball forward 실측값이 필요합니다")
+    if not 0.05 <= args.final_dock_max_m <= FINAL_DOCK_MAX_M:
+        parser.error("final-dock-max-m은 [0.05, 0.60] 범위여야 합니다")
+    if not 1.0 <= args.final_dock_max_duration_s <= FINAL_DOCK_MAX_DURATION_S:
+        parser.error("final-dock-max-duration-s는 [1.0, 4.0] 범위여야 합니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
         parser.error("stage range는 D435i valid range 안의 min < max여야 합니다")
     if args.observation_count < 3 or args.max_cycles < 1 or args.max_lateral_probe_attempts < 1:
@@ -893,6 +1062,7 @@ def main() -> int:
         args.reobserve_settle_s, args.max_travel_m,
         args.max_odom_stale_s, args.direct_remote_max_age_s, args.direct_remote_hold_s,
         args.ball_detection_max_age_s,
+        args.max_forward_pulse_travel_m,
     ) <= 0.0 or not 1 <= args.direct_remote_udp_port <= 65535:
         parser.error("pulse/settle/travel/stale/direct-remote 값은 양수 범위여야 합니다")
 
@@ -921,7 +1091,7 @@ def main() -> int:
     print("MCF_D435I_BALL_TAG_STAGE_{} output={}".format(payload["verdict"], output))
     print(json.dumps(payload, ensure_ascii=False))
     return 0 if payload["verdict"] in {
-        "DRY_RUN_READY", "CAMERA_STAGING_READY", "LATERAL_PROBE_MEASURED",
+        "DRY_RUN_READY", "CAMERA_STAGING_READY", "FINAL_DOCKING_READY", "LATERAL_PROBE_MEASURED",
     } else 2
 
 
