@@ -116,7 +116,8 @@ ownership 변경도 자동화하지 않는다.
 실물에서 gait가 확인된 경로는 WebRTC bridge의 App-equivalent
 `rt/wirelesscontroller`뿐이다. 새 `stage_go2_mcf_ball_tag_webrtc.py`는 D435i의 ball/Tag
 camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓰고, 0.20 joystick의 짧은 pulse마다
-neutral 3회와 재관측을 한다. 순서는 Tag ground-ray yaw 정렬 → 실측 FR lane template의
+neutral 3회와 재관측을 한다. yaw pulse는 0.50초다(이 실물에서 0.20초는 gait initiation 전에
+끝날 수 있었다). 순서는 Tag ground-ray yaw 정렬 → 실측 FR lane template의
 ball-bearing 측방 보정 → 전진이다. 따라서 공과 Tag bearing 오차가 반대라는 이유로 회전 전에
 중단하지 않는다. 측방 방향은 가정하지 않고 `--allow-lateral-search`에서만 0.20초 probe 한 번을
 보낸 뒤 다음 D435i depth observation으로 실제 개선 여부를 확인한다.
