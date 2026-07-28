@@ -144,25 +144,32 @@ python hardware/go2_edu_stationary_kick/calibrate_go2_mcf_websocket_joystick_odo
 calibration success다. static LiDAR drift는 수 cm 가능하므로 이 단계는 target-kick alignment
 판정이 아니라 safe locomotion scale 확인에만 사용한다.
 
+## Physical remote direct-DDS watchdog
 
-## Physical remote preempt evidence
+실측 결과 이 firmware의 WebRTC data-channel subscriber는 physical remote의 실제
+non-neutral input을 전달하지 않았다. 따라서 `probe_go2_mcf_webrtc_remote_preempt.py`의
+`NO_PHYSICAL_INPUT_OBSERVED`는 remote 고장이 아니라 transport 한계이며, stage execute의
+evidence로 사용하지 않는다.
 
-camera-staging process가 virtual joystick을 보내기 전에, 같은 WebRTC data channel이
-physical remote의 실제 non-neutral input도 구독하는지 먼저 확인한다. 다음 probe는 publisher를
-전혀 만들지 않는다. `READY`가 보인 뒤 12초 안에 operator가 physical remote stick 또는 버튼을
-한 번만 입력하고 바로 neutral로 돌린다. 이 명령의 목적은 robot을 움직이는 것이 아니라 remote
-입력 event를 evidence JSON으로 남기는 것이다.
+대신 `watch_go2_physical_remote_dds.py`가 이미 검증된 SDK direct DDS
+`rt/wirelesscontroller`를 read-only로 구독한다. watcher는 status JSON heartbeat와 localhost
+UDP event만 만들며 publisher, LowCmd, MotionSwitcher, Sport API를 사용하지 않는다.
 
 ```bash
-python hardware/go2_edu_stationary_kick/probe_go2_mcf_webrtc_remote_preempt.py \
-  --robot-ip 192.168.123.161
+cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-unitree-sdk-py311
+unset PYTHONPATH
+python hardware/go2_edu_stationary_kick/watch_go2_physical_remote_dds.py \
+  --interface eth0
 ```
 
-정상은 `MCF_WEBRTC_REMOTE_PREEMPT_PHYSICAL_INPUT_OBSERVED`다. 출력한
-`hardware_measurements/go2_mcf_webrtc_remote_preempt_*.json`을 다음 stage 실행의
-`--remote-preempt-evidence`로 사용한다. `NO_PHYSICAL_INPUT_OBSERVED`이면 camera-staging
-execute를 허용하지 않는다. 이 evidence는 read-only probe에서 얻은 것이므로 virtual command의
-성공 증거가 아니며, 실행 중에도 다시 non-neutral input을 감시한다.
+`DIRECT_DDS_REMOTE_WATCHDOG_READY` 뒤 empty floor/E-stop 상태에서 physical remote stick을
+짧게 입력하고 중립으로 돌린다. `hardware_measurements/go2_direct_remote_watchdog.json`의
+`physical_input_event_count >= 1`, fresh `heartbeat_monotonic_s`, 그리고 0.6초보다 오래된
+`last_active_monotonic_s`가 execute의 필수 조건이다. 실행 중 새 direct DDS input이 오면 stage는
+다음 50 Hz virtual packet 전에 neutralize한다. 이것은 firmware-level controller arbitration이
+아닌 user-space fail-closed guard이므로 physical remote/E-stop은 계속 operator의 1차 안전 수단이다.
 
 ## D435i ball/Tag camera staging (FR kick 전용 아님)
 
@@ -186,41 +193,19 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --robot-ip 192.168.123.161 --tag-id 11
 ```
 
-dry-run이 통과하고, 전방 1 m 이상 clear floor, physical remote/E-stop, 앞 단계 remote evidence가
+dry-run이 통과하고, 전방 1 m 이상 clear floor, physical remote/E-stop, direct DDS watcher가
 준비된 경우에만 아래처럼 explicit arm한다.
 
 ```bash
-evidence=$(ls -t hardware_measurements/go2_mcf_webrtc_remote_preempt_*.json | head -1)
+status=hardware_measurements/go2_direct_remote_watchdog.json
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --robot-ip 192.168.123.161 --tag-id 11 \
-  --execute --remote-preempt-evidence "$evidence" \
+  --direct-remote-status "$status" --execute \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
 
-`CAMERA_STAGING_READY`만 stage success다. `REMOTE_PREEMPTED`, `ODOM_STALE`,
+`CAMERA_STAGING_READY`만 stage success다. `PHYSICAL_REMOTE_PREEMPTED`,
+`DIRECT_REMOTE_WATCHDOG_LOST`, `ODOM_STALE`,
 `PERCEPTION_REJECTED_*`, `TRAVEL_LIMIT_REACHED`, `BALL_TOO_CLOSE_NO_REVERSE`,
 `CYCLE_LIMIT_REACHED`는 모두 neutral 상태로 멈춘 fail-closed 결과다. 특히
 `CAMERA_STAGING_READY`는 final FR kick lane도 target-hit success도 아니다.
-
-
-### FR lane template is mandatory
-
-이전 camera-staging planner는 ball bearing을 0으로 맞추려 했지만, 이는 robot center 기준
-정렬이며 FR foot의 lateral offset을 지운다. 실제 FR kick에는
-`FR toe swing/contact lane -> ball center -> Tag ground projection` 선을 기준으로 해야 한다.
-따라서 stage controller는 이제 `capture_d435i_fr_lane_template.py`가 만든 template 없이는
-dry-run을 `FR_LANE_TEMPLATE_REQUIRED`, execute를 `FR_LANE_TEMPLATE_REJECTED`로 끝낸다.
-
-template capture 전에 operator는 valid FR lane에서 robot의 yaw/lateral offset을 유지한 채
-0.65–0.85m 뒤로 물려 D435i가 ball+Tag를 동시에 보는 spot을 만들어야 한다. capture는
-D435i HTTP state만 읽고 motion command를 만들지 않는다.
-
-```bash
-python hardware/go2_edu_stationary_kick/capture_d435i_fr_lane_template.py \
-  --tag-id 11 --operator-confirm FR_LANE_TEMPLATE_SPOT_MARKED
-```
-
-후속 stage는 template의 desired ball bearing과 desired target bearing을 동시에 보정한다.
-두 error가 반대 부호이면 in-place yaw로 해결할 수 없는 lateral/base mismatch이므로
-`FR_LANE_LATERAL_ALIGNMENT_REQUIRED`로 neutral stop한다. 이 결과에서 lateral virtual
-joystick이나 final LowCmd docking을 임의로 추가하지 않는다.
