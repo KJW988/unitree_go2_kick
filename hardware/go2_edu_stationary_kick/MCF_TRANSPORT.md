@@ -42,7 +42,7 @@ kick environment는 변경하지 않는다.
 
 ## 첫 검증은 read-only
 
-`ROBOT_WIFI_IP`는 Unitree App이 실제로 연결하는 Go2 LAN IP다. 현재 robot PC의
+`ROBOT_WIFI_IP`는 Unitree App이 실제로 연결하는 robot의 Wi-Fi LAN IP다. 현재 robot PC의
 `wlan0` IP와 혼동하지 말고 App device details에서 확인한다. 이 probe는 WebRTC connection,
 MCF `GetState`, low-frequency state subscription만 수행한다.
 
@@ -66,3 +66,30 @@ python hardware/go2_edu_stationary_kick/probe_go2_mcf_webrtc.py \
 3. physical remote preempt가 gait proof 중에도 우선하는지 검증
 4. 그 다음에만 D435i ball/AprilTag planner를 MCF walker에 연결
 5. FR LowCmd kick은 별도 one-shot 실험으로 유지하며 자동 handback은 연결하지 않음
+
+## Minimal forward gait proof
+
+실제 robot에서 read-only probe가 `192.168.123.161`으로 통과했다. 이 IP는 robot PC의
+`192.168.123.18`이나 PC WLAN IP와 다르며 Go2 MCU WebRTC endpoint다. 다음 script는
+**기본값으로 read-only preflight만** 한다. preflight는 `mode/progress/body height/velocity`를
+확인하고, 운동 command를 전송하지 않는다.
+
+```bash
+python hardware/go2_edu_stationary_kick/prove_go2_mcf_webrtc_walk.py \
+  --robot-ip 192.168.123.161
+```
+
+하네스가 아닌 실제 바닥에서는 robot 전방 1 m 이상을 완전히 비우고, physical remote/E-stop을
+손에 든 operator가 robot을 계속 볼 때만 아래 실행을 허용한다. 정확히 `0.05 m/s`, 10 Hz,
+1.0초만 전진 command를 보내며 바로 MCF `StopMove` acknowledgement를 기다린다. legacy
+`SportClient`, MotionSwitcher, LowCmd 및 obstacle setting은 건드리지 않는다.
+
+```bash
+python hardware/go2_edu_stationary_kick/prove_go2_mcf_webrtc_walk.py \
+  --robot-ip 192.168.123.161 \
+  --execute \
+  --operator-confirm MCF_EMPTY_FLOOR_ESTOP_READY
+```
+
+성공 판정은 log의 `COMMAND_AND_STOP_ACKED`와 operator의 실제 전진 관찰을 **둘 다** 만족하는
+것이다. SDK return code/telemetry만으로 physical gait 성공이라고 판단하지 않는다.
