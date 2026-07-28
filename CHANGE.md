@@ -420,3 +420,14 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - 검증: Python 3.8 `py_compile`, 두 entry point `--help`, `git diff --check`, synthetic
   odometry에서 최소 active time/새 sample 3회/동일 sample 비중복 확인을 통과했다.
   실제 전진·yaw·lateral gait와 final LowCmd 연결은 Go2에서 재검증해야 한다.
+
+## 2026-07-28 — final gait contact 방지 및 LowCmd 전환 정지 gate
+
+- 실물 final dock은 camera→ball 0.03m, FR→ball 약 0.20m까지 보행했고 마지막 FR gait
+  swing이 공을 먼저 접촉했다. stage는 기본 0.08m gait-to-kick clearance를 추가해
+  FR→ball 0.26m에서 보행을 끝내고 남은 거리를 1.2x FR kick이 담당하게 했다.
+- neutral 뒤 최근 0.40초의 MCF planar/yaw velocity와 LiDAR odometry span이 정지 gate를
+  통과하지 않으면 `FINAL_DOCK_NOT_SETTLED`로 LowCmd를 막는다.
+- 240 packet 장시간 pulse의 scheduling 지연으로 고정 self-echo expiry가 먼저 끝날 수 있어,
+  active 동안 0.20초마다 0.50초 exact-value lease를 갱신하도록 변경했다. 물리 remote의
+  다른 값은 계속 즉시 preempt하며 동일 값/동시 입력을 구분하지 못하는 제한은 유지한다.
