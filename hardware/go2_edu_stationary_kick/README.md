@@ -116,8 +116,10 @@ ownership 변경도 자동화하지 않는다.
 실물에서 gait가 확인된 경로는 WebRTC bridge의 App-equivalent
 `rt/wirelesscontroller`뿐이다. 새 `stage_go2_mcf_ball_tag_webrtc.py`는 D435i의 ball/Tag
 camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓰고, 0.20 joystick의 짧은 pulse마다
-neutral 3회와 재관측을 한다. 이 stage는 공/Tag가 camera에서 보이는 0.65–0.85m 준비 위치에서
-멈출 뿐, camera→base→FR extrinsic이 없는 현재 상태에서 final foot lane 또는 킥을 주장하지 않는다.
+neutral 3회와 재관측을 한다. 순서는 Tag ground-ray yaw 정렬 → 실측 FR lane template의
+ball-bearing 측방 보정 → 전진이다. 따라서 공과 Tag bearing 오차가 반대라는 이유로 회전 전에
+중단하지 않는다. 측방 방향은 가정하지 않고 `--allow-lateral-search`에서만 0.20초 probe 한 번을
+보낸 뒤 다음 D435i depth observation으로 실제 개선 여부를 확인한다.
 
 먼저 D435 perception terminal에서 stream을 유지한다.
 
@@ -157,14 +159,27 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
 clear floor, physical remote/E-stop, 위 direct DDS watchdog이 heartbeat와 physical input proof를
 유지하는 경우에만 명시적으로 arm한다.
 continuous drive가 아니라 최대 5개의 bounded pulse와 start-pose에서 최대 0.35m travel만
-허용한다. `CAMERA_STAGING_READY`가 아닌 모든 결과는 neutral로 중단한 것이며, 특히 이 성공은
-final FR foot lane, LowCmd handoff, 킥/Tag hit success가 아니다.
+허용한다. `CAMERA_STAGING_READY`가 아닌 모든 결과는 neutral로 중단한다. 이 성공은 실측
+camera FR lane template의 `kick_ready.eligible`일 뿐 LowCmd를 자동 시작하지 않는다. 이 EDU
+firmware에서 MCF→LowCmd release와 LowCmd 종료 뒤 MCF 복귀는 토크 공백/떨림/주저앉음을 실제로
+보였으므로, ownership handoff는 `live_baseline_fr_preset.py`의 별도 harness 실행으로 유지한다.
 
 ```bash
 status=hardware_measurements/go2_direct_remote_watchdog.json
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
   --direct-remote-status "$status" --execute \
+  --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
+```
+
+처음에는 `--max-cycles 1`로 dry-run에 표시된 `turn_to_tag_ray` 회전 하나만 검증한다. yaw가
+template tolerance 안에 들어온 뒤 dry-run이 `lateral_to_fr_lane`이면, clear floor에서만 아래처럼
+측방 probe를 explicit arm한다.
+
+```bash
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
+  --direct-remote-status "$status" --allow-lateral-search --max-cycles 1 --execute \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
 
