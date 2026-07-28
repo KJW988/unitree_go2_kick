@@ -39,7 +39,9 @@ from typing import Any
 JOYSTICK_MAGNITUDE = 0.20
 COMMAND_RATE_HZ = 50.0
 FORWARD_PULSE_S = 0.50
-TURN_PULSE_S = 0.20
+# 0.20 s는 이 실물에서 gait initiation 전에 끝날 수 있었다. yaw도 한 번의 bounded
+# observation pulse가 필요하므로, magnitude는 그대로 두고 duration만 0.50 s로 둔다.
+TURN_PULSE_S = 0.50
 LATERAL_PULSE_S = 0.20
 NEUTRAL_PACKET_COUNT = 3
 STATE_SETTLE_S = 1.0
