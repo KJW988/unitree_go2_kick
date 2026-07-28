@@ -177,6 +177,9 @@ WebRTC virtual joystick도 같은 `rt/wirelesscontroller` DDS topic에 echo된�
 기존처럼 preempt한다. window 중 physical remote가 virtual packet과 완전히 같은 값까지 보내면
 구별 불가하므로, 이 제한은 status JSON의
 `same_value_physical_input_during_echo_window_unobservable=true`로 명시한다.
+stage execute는 watcher의 `virtual_echo_protocol_version=1`과 동일 echo-window path를
+확인한다. 따라서 code update 전에 시작한 watcher는 재시작해야 하며, 그렇지 않으면
+`DIRECT_REMOTE_WATCHDOG_REJECTED`로 fail-closed한다.
 
 ## D435i ball/Tag camera staging (FR kick 전용 아님)
 
@@ -194,6 +197,10 @@ gait initiation 전에 끝날 수 있었다). 기본 staging depth는 0.65–0.8
 상대 bearing의 측방 보정 → yaw 재확인 → 전진이다. robot yaw는 공과 Tag를 거의 함께 회전시키므로
 상대적인 lateral lane 오차를 고칠 수 없다. 따라서 yaw 정렬 뒤 남은 상대 bearing을
 `--allow-lateral-search`의 0.50초 lateral probe와 다음 D435i depth 관측으로 보정한다.
+통합 runner에서는 ball→Tag ground-ray의 camera bearing 목표를 0rad로 두고 heading
+deadband를 0.03rad로 제한한다. yaw pulse는 LiDAR odometry가 요청 yaw 변화량을 확인하면
+0.50초 상한 전에 neutralize한다. 이는 D435i optical forward가 robot forward와 평행하다는
+현재 mount 조건에 한정되며 camera mount yaw가 바뀌면 다시 실측해야 한다.
 
 현장 generic detector의 intermittent miss 때문에 stream은 마지막 YOLO bbox를 최대 0.50초만
 보존하고, 현재 aligned-depth frame에서 range/floor geometry를 다시 계산한다. state에는
