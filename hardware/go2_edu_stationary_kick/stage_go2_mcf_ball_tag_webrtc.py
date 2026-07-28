@@ -10,8 +10,10 @@
 각 cycle에서 D435i state freshness, ball/Tag geometry, MCF stand state, LiDAR odometry,
 start-pose 기준 travel hard limit을 모두 검사한다. 이 firmware의 WebRTC subscriber는
 physical remote input을 전달하지 않으므로, 별도 direct-DDS watchdog의 fresh heartbeat와
-input proof를 실행 전 요구한다. watchdog의 localhost UDP event 또는 상태 파일에서 실제
-remote input이 보이면 다음 packet 전에 neutralize하고 이번 process를 종료한다.
+input proof를 실행 전 요구한다. watcher가 stage의 동일 virtual packet echo만 좁은 time
+window에서 제외한 뒤 다른 remote input을 관측하면, 다음 packet 전에 neutralize하고 이번
+process를 종료한다. SDK callback에는 DDS writer identity가 없어 같은 값의 동시 physical input은
+구분 불가하며 physical remote/E-stop은 계속 operator의 1차 안전 수단이다.
 
 출처: legion1581/unitree_webrtc_connect v2.1.2,
 https://github.com/legion1581/unitree_webrtc_connect
@@ -58,6 +60,8 @@ MAX_CYCLES = 5
 DIRECT_REMOTE_MAX_STATUS_AGE_S = 0.35
 DIRECT_REMOTE_HOLD_S = 0.60
 DIRECT_REMOTE_UDP_PORT = 18181
+DEFAULT_VIRTUAL_ECHO_WINDOW = Path("hardware_measurements/go2_stage_virtual_joystick_echo_window.json")
+VIRTUAL_ECHO_GRACE_S = 0.15
 LATERAL_MIN_IMPROVEMENT_RAD = 0.01
 MAX_LATERAL_PROBE_ATTEMPTS = 3
 CONFIRMATION = "MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY"
@@ -370,6 +374,41 @@ def publish_joystick(pub_sub: Any, topic: str, *, lx: float = 0.0, ly: float = 0
     pub_sub.publish_without_callback(topic, {"lx": lx, "ly": ly, "rx": rx, "ry": 0.0, "keys": 0})
 
 
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name("." + path.name + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def arm_virtual_echo_window(path: Path, *, lx: float, ly: float, rx: float, duration_s: float) -> None:
+    """direct DDS watcher가 자기 WebRTC packet echo를 physical input으로 오인하지 않게 한다.
+
+    Unitree SDK callback에는 DDS writer identity가 없다. 따라서 bounded pulse 직전의 exact
+    value/time window만 watcher와 공유한다. 값까지 같은 physical input은 구별할 수 없으므로
+    이 window는 packet duration + 짧은 transport grace보다 길게 유지하지 않는다.
+    """
+    now = time.monotonic()
+    atomic_write_json(path, {
+        "schema_version": 1,
+        "kind": "go2_stage_virtual_joystick_echo_window",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "expires_monotonic_s": now + duration_s + VIRTUAL_ECHO_GRACE_S,
+        "joystick": {"lx": lx, "ly": ly, "rx": rx, "ry": 0.0, "keys": 0},
+    })
+
+
+def disarm_virtual_echo_window(path: Path) -> None:
+    """pulse가 끝나면 즉시 expiry를 과거로 보내 watcher의 physical-input 감시를 복원한다."""
+    atomic_write_json(path, {
+        "schema_version": 1,
+        "kind": "go2_stage_virtual_joystick_echo_window",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "expires_monotonic_s": time.monotonic() - 1.0,
+        "joystick": {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0, "keys": 0},
+    })
+
+
 async def neutralize(pub_sub: Any, topic: str) -> int:
     for _ in range(NEUTRAL_PACKET_COUNT):
         publish_joystick(pub_sub, topic)
@@ -384,6 +423,9 @@ async def joystick_pulse(
     """partial burst도 neutralize한다. direct DDS remote input은 다음 packet 전에 stop한다."""
     packets = 0
     termination = "pulse_complete"
+    arm_virtual_echo_window(
+        args.virtual_echo_window, lx=lx, ly=ly, rx=rx, duration_s=duration_s,
+    )
     try:
         for _ in range(math.ceil(duration_s * COMMAND_RATE_HZ)):
             watchdog, watchdog_reason = load_direct_remote_watchdog(
@@ -402,6 +444,9 @@ async def joystick_pulse(
             await asyncio.sleep(1.0 / COMMAND_RATE_HZ)
     finally:
         neutral_packets = await neutralize(pub_sub, topic)
+        # 마지막 active packet의 DDS echo가 neutral 뒤에 도착할 수 있다.
+        await asyncio.sleep(VIRTUAL_ECHO_GRACE_S)
+        disarm_virtual_echo_window(args.virtual_echo_window)
     return packets, neutral_packets, termination
 
 
@@ -501,6 +546,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "command_contract": {
                 "transport": "WebRTC rt/wirelesscontroller only",
                 "physical_remote_guard": "direct DDS watcher heartbeat + localhost UDP event",
+                "virtual_echo_window": str(args.virtual_echo_window),
+                "writer_identity_available": False,
+                "same_value_physical_input_during_echo_window_unobservable": True,
                 "joystick_magnitude": args.joystick_magnitude,
                 "rate_hz": COMMAND_RATE_HZ,
                 "forward_pulse_s": args.forward_pulse_s,
@@ -684,6 +732,10 @@ def main() -> int:
     parser.add_argument("--direct-remote-udp-port", type=int, default=DIRECT_REMOTE_UDP_PORT)
     parser.add_argument("--direct-remote-max-age-s", type=float, default=DIRECT_REMOTE_MAX_STATUS_AGE_S)
     parser.add_argument("--direct-remote-hold-s", type=float, default=DIRECT_REMOTE_HOLD_S)
+    parser.add_argument(
+        "--virtual-echo-window", type=Path, default=DEFAULT_VIRTUAL_ECHO_WINDOW,
+        help="watch_go2_physical_remote_dds.py와 공유하는 bounded WebRTC self-echo window JSON",
+    )
     parser.add_argument("--connect-timeout-s", type=float, default=12.0)
     parser.add_argument("--http-timeout-s", type=float, default=0.25)
     parser.add_argument("--perception-max-age-s", type=float, default=MAX_PERCEPTION_AGE_S)
