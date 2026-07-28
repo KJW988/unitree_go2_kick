@@ -40,6 +40,7 @@ JOYSTICK_MAGNITUDE = 0.20
 COMMAND_RATE_HZ = 50.0
 FORWARD_PULSE_S = 0.50
 TURN_PULSE_S = 0.20
+LATERAL_PULSE_S = 0.20
 NEUTRAL_PACKET_COUNT = 3
 STATE_SETTLE_S = 1.0
 REOBSERVE_SETTLE_S = 0.50
@@ -54,6 +55,8 @@ MAX_CYCLES = 5
 DIRECT_REMOTE_MAX_STATUS_AGE_S = 0.35
 DIRECT_REMOTE_HOLD_S = 0.60
 DIRECT_REMOTE_UDP_PORT = 18181
+LATERAL_MIN_IMPROVEMENT_RAD = 0.01
+MAX_LATERAL_PROBE_ATTEMPTS = 3
 CONFIRMATION = "MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY"
 
 
@@ -335,26 +338,24 @@ def load_fr_lane_template(path: Path | None, tag_id: int) -> tuple[FrLaneTemplat
     return lane, "fr_lane_template_pass"
 
 
-def action_for(perception: Perception, args: argparse.Namespace, lane: FrLaneTemplate) -> tuple[str, float, float, float]:
-    """FR template에 대해 yaw/forward만 제한적으로 보정한다.
+def action_for(
+    perception: Perception, args: argparse.Namespace, lane: FrLaneTemplate, lateral_sign: float,
+) -> tuple[str, float, float, float]:
+    """Tag yaw를 먼저 맞춘 뒤 ball bearing을 bounded lateral probe로 보정한다.
 
     ball bearing을 0으로 맞추지 않는다. FR의 lateral offset 때문에 valid kick lane의 ball은
-    camera image 중앙에서 벗어날 수 있다. 두 bearing error의 부호가 반대면 yaw만으로는
-    해소할 수 없으므로 lateral/base calibration 전에는 이동을 금지한다.
+    camera image 중앙에서 벗어날 수 있다. Tag ground-ray는 robot yaw로만 우선 정렬한다.
+    yaw 정렬 뒤 남은 ball bearing은 작은 ``lx`` pulse로 한 방향을 시험하고, 다음 D435i
+    observation에서 실제 improvement가 없으면 반대 방향을 시험한다. 즉 joystick lateral
+    부호를 가정해 연속 이동하지 않는다.
     """
     ball_error = angle_distance(perception.ball_bearing_rad, lane.desired_ball_bearing_rad)
     target_error = angle_distance(perception.target_bearing_rad, lane.desired_target_bearing_rad)
-    ball_aligned = abs(ball_error) <= lane.ball_bearing_tolerance_rad
-    target_aligned = abs(target_error) <= lane.target_bearing_tolerance_rad
-    if not ball_aligned or not target_aligned:
-        if not ball_aligned and not target_aligned and ball_error * target_error < 0.0:
-            return "fr_lane_lateral_alignment_required", 0.0, 0.0, 0.0
-        correction = (
-            ball_error if not target_aligned else target_error if not ball_aligned
-            else 0.5 * (ball_error + target_error)
-        )
+    if abs(target_error) > lane.target_bearing_tolerance_rad:
         # Upstream example convention: +rx left turn, -rx right turn.
-        return "turn_to_fr_lane", 0.0, 0.0, -math.copysign(args.joystick_magnitude, correction)
+        return "turn_to_tag_ray", 0.0, 0.0, -math.copysign(args.joystick_magnitude, target_error)
+    if abs(ball_error) > lane.ball_bearing_tolerance_rad:
+        return "lateral_to_fr_lane", math.copysign(args.joystick_magnitude, lateral_sign), 0.0, 0.0
     if perception.ball_range_m < lane.desired_ball_range_m - lane.range_tolerance_m:
         return "ball_too_close_no_reverse", 0.0, 0.0, 0.0
     if perception.ball_range_m <= lane.desired_ball_range_m + lane.range_tolerance_m:
@@ -501,6 +502,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "rate_hz": COMMAND_RATE_HZ,
                 "forward_pulse_s": args.forward_pulse_s,
                 "turn_pulse_s": args.turn_pulse_s,
+                "lateral_pulse_s": args.lateral_pulse_s,
+                "lateral_search_opt_in": args.allow_lateral_search,
+                "lateral_min_improvement_rad": args.lateral_min_improvement_rad,
+                "max_lateral_probe_attempts": args.max_lateral_probe_attempts,
                 "neutral_packets_after_each_pulse": NEUTRAL_PACKET_COUNT,
                 "max_travel_m": args.max_travel_m,
                 "max_cycles": args.max_cycles,
@@ -517,7 +522,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             return result
 
         assert perception is not None and baseline is not None and lane_template is not None
-        first_action = action_for(perception, args, lane_template)
+        # lateral joystick의 + 부호가 camera ball-bearing을 어느 방향으로 바꾸는지는
+        # mount/firmware 환경마다 확정할 수 없다. 첫 짧은 probe만 관측해 sign을 정한다.
+        lateral_sign = 1.0
+        lateral_sign_confirmed = False
+        lateral_probe_attempts = 0
+        pending_lateral_probe: dict[str, float] | None = None
+        result["lateral_probe_results"] = []
+        first_action = action_for(perception, args, lane_template, lateral_sign)
         if not args.execute:
             result["dry_run_next_action"] = {"reason": first_action[0], "joystick": list(first_action[1:])}
             result["verdict"] = "DRY_RUN_READY"
@@ -541,6 +553,31 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if perception is None:
                 result["verdict"] = "PERCEPTION_REJECTED_{}".format(perception_reason.upper())
                 break
+            if pending_lateral_probe is not None:
+                after_abs_error = abs(angle_distance(
+                    perception.ball_bearing_rad, lane_template.desired_ball_bearing_rad,
+                ))
+                improvement = pending_lateral_probe["before_abs_error_rad"] - after_abs_error
+                probe_result = {
+                    **pending_lateral_probe,
+                    "after_abs_error_rad": after_abs_error,
+                    "improvement_rad": improvement,
+                }
+                if improvement >= args.lateral_min_improvement_rad:
+                    lateral_sign = pending_lateral_probe["sign"]
+                    lateral_sign_confirmed = True
+                    probe_result["verdict"] = "sign_confirmed"
+                elif lateral_probe_attempts >= args.max_lateral_probe_attempts:
+                    probe_result["verdict"] = "no_convergence"
+                    result["lateral_probe_results"].append(probe_result)
+                    result["verdict"] = "LATERAL_PROBE_NO_CONVERGENCE"
+                    break
+                else:
+                    # 반대 sign도 한 번만 관측한다. sign을 추정으로 고정하지 않는다.
+                    lateral_sign = -pending_lateral_probe["sign"]
+                    probe_result["verdict"] = "flip_sign_and_retry"
+                result["lateral_probe_results"].append(probe_result)
+                pending_lateral_probe = None
             if latest_pose is None or time.monotonic() - connected_at - latest_pose["elapsed_s"] > args.max_odom_stale_s:
                 result["verdict"] = "ODOM_STALE"
                 break
@@ -548,7 +585,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if travel_m >= args.max_travel_m:
                 result["verdict"] = "TRAVEL_LIMIT_REACHED"
                 break
-            reason, lx, ly, rx = action_for(perception, args, lane_template)
+            reason, lx, ly, rx = action_for(perception, args, lane_template, lateral_sign)
             cycle: dict[str, Any] = {
                 "index": cycle_index,
                 "perception": asdict(perception),
@@ -560,11 +597,36 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             result["cycles"].append(cycle)
             if reason == "camera_staging_ready":
                 result["verdict"] = "CAMERA_STAGING_READY"
+                result["kick_ready"] = {
+                    "eligible": True,
+                    "geometry_source": "D435i FR lane template",
+                    "lowcmd_started": False,
+                    "reason": "MCF_to_LowCmd ownership handoff remains a separate harness action",
+                }
                 break
-            if reason in ("ball_too_close_no_reverse", "fr_lane_lateral_alignment_required"):
+            if reason == "ball_too_close_no_reverse":
                 result["verdict"] = reason.upper()
                 break
-            duration_s = args.forward_pulse_s if reason == "forward" else args.turn_pulse_s
+            if reason == "lateral_to_fr_lane" and not args.allow_lateral_search:
+                result["verdict"] = "LATERAL_SEARCH_NOT_ARMED"
+                break
+            if reason == "lateral_to_fr_lane" and not lateral_sign_confirmed:
+                if lateral_probe_attempts >= args.max_lateral_probe_attempts:
+                    result["verdict"] = "LATERAL_PROBE_NO_CONVERGENCE"
+                    break
+                lateral_probe_attempts += 1
+                pending_lateral_probe = {
+                    "attempt": float(lateral_probe_attempts),
+                    "sign": math.copysign(1.0, lx),
+                    "before_abs_error_rad": abs(angle_distance(
+                        perception.ball_bearing_rad, lane_template.desired_ball_bearing_rad,
+                    )),
+                }
+            duration_s = (
+                args.forward_pulse_s if reason == "forward"
+                else args.turn_pulse_s if reason == "turn_to_tag_ray"
+                else args.lateral_pulse_s
+            )
             sent, neutral, pulse_result = await joystick_pulse(
                 pub_sub, RTC_TOPIC["WIRELESS_CONTROLLER"], lx=lx, ly=ly, rx=rx,
                 duration_s=duration_s, direct_latch=direct_latch, args=args,
@@ -634,6 +696,13 @@ def main() -> int:
     parser.add_argument("--joystick-magnitude", type=float, default=JOYSTICK_MAGNITUDE)
     parser.add_argument("--forward-pulse-s", type=float, default=FORWARD_PULSE_S)
     parser.add_argument("--turn-pulse-s", type=float, default=TURN_PULSE_S)
+    parser.add_argument(
+        "--allow-lateral-search", action="store_true",
+        help="FR lane ball-bearing 보정용 bounded lateral probe를 명시적으로 arm한다",
+    )
+    parser.add_argument("--lateral-pulse-s", type=float, default=LATERAL_PULSE_S)
+    parser.add_argument("--lateral-min-improvement-rad", type=float, default=LATERAL_MIN_IMPROVEMENT_RAD)
+    parser.add_argument("--max-lateral-probe-attempts", type=int, default=MAX_LATERAL_PROBE_ATTEMPTS)
     parser.add_argument("--reobserve-settle-s", type=float, default=REOBSERVE_SETTLE_S)
     parser.add_argument("--max-travel-m", type=float, default=MAX_TRAVEL_M)
     parser.add_argument("--max-cycles", type=int, default=MAX_CYCLES)
@@ -651,10 +720,11 @@ def main() -> int:
         parser.error("joystick magnitude는 0보다 크고 0.20 이하여야 합니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
         parser.error("stage range는 D435i valid range 안의 min < max여야 합니다")
-    if args.observation_count < 3 or args.max_cycles < 1:
-        parser.error("observation-count는 3 이상이고 max-cycles는 1 이상이어야 합니다")
+    if args.observation_count < 3 or args.max_cycles < 1 or args.max_lateral_probe_attempts < 1:
+        parser.error("observation-count는 3 이상이고 max-cycles/max-lateral-probe-attempts는 1 이상이어야 합니다")
     if min(
-        args.forward_pulse_s, args.turn_pulse_s, args.reobserve_settle_s, args.max_travel_m,
+        args.forward_pulse_s, args.turn_pulse_s, args.lateral_pulse_s, args.lateral_min_improvement_rad,
+        args.reobserve_settle_s, args.max_travel_m,
         args.max_odom_stale_s, args.direct_remote_max_age_s, args.direct_remote_hold_s,
     ) <= 0.0 or not 1 <= args.direct_remote_udp_port <= 65535:
         parser.error("pulse/settle/travel/stale/direct-remote 값은 양수 범위여야 합니다")
