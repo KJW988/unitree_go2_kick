@@ -143,3 +143,61 @@ python hardware/go2_edu_stationary_kick/calibrate_go2_mcf_websocket_joystick_odo
 끝났다는 뜻일 뿐이다. 기록된 `measured_forward_m`와 operator의 실제 측정값을 비교해야
 calibration success다. static LiDAR drift는 수 cm 가능하므로 이 단계는 target-kick alignment
 판정이 아니라 safe locomotion scale 확인에만 사용한다.
+
+
+## Physical remote preempt evidence
+
+camera-staging process가 virtual joystick을 보내기 전에, 같은 WebRTC data channel이
+physical remote의 실제 non-neutral input도 구독하는지 먼저 확인한다. 다음 probe는 publisher를
+전혀 만들지 않는다. `READY`가 보인 뒤 12초 안에 operator가 physical remote stick 또는 버튼을
+한 번만 입력하고 바로 neutral로 돌린다. 이 명령의 목적은 robot을 움직이는 것이 아니라 remote
+입력 event를 evidence JSON으로 남기는 것이다.
+
+```bash
+python hardware/go2_edu_stationary_kick/probe_go2_mcf_webrtc_remote_preempt.py \
+  --robot-ip 192.168.123.161
+```
+
+정상은 `MCF_WEBRTC_REMOTE_PREEMPT_PHYSICAL_INPUT_OBSERVED`다. 출력한
+`hardware_measurements/go2_mcf_webrtc_remote_preempt_*.json`을 다음 stage 실행의
+`--remote-preempt-evidence`로 사용한다. `NO_PHYSICAL_INPUT_OBSERVED`이면 camera-staging
+execute를 허용하지 않는다. 이 evidence는 read-only probe에서 얻은 것이므로 virtual command의
+성공 증거가 아니며, 실행 중에도 다시 non-neutral input을 감시한다.
+
+## D435i ball/Tag camera staging (FR kick 전용 아님)
+
+`approach_ball_to_tag.py`는 legacy `SportClient/ObstaclesAvoidClient.Move` 경로를 사용하며
+이 firmware에서는 acknowledgement만 있고 실제 gait가 없었다. **실물에서 실행하지 않는다.**
+대신 `stage_go2_mcf_ball_tag_webrtc.py`는 이미 physical gait가 검증된 WebRTC
+`rt/wirelesscontroller`만 사용한다.
+
+이 stage는 D435i `state.json`에서 3개의 안정 frame에 대해 ball depth/YOLO confidence,
+ball bearing, Tag 지면투영 target bearing을 확인하고, LiDAR odometry static baseline과
+0.35 m travel hard limit을 통과할 때만 동작한다. continuous drive가 아니라 0.20 magnitude의
+짧은 yaw/forward pulse 뒤 neutral 3회와 재관측을 반복한다. 기본 staging depth는 0.65–0.85 m다.
+따라서 공과 Tag가 camera에서 보이는 정렬 준비까지만 수행하며, camera→base→FR transform이
+없는 현재 상태에서는 FR foot lane/LowCmd kick을 호출하지 않는다.
+
+먼저 D435i stream을 별도 perception terminal에서 유지한다. 다음 command는 motion command를
+보내지 않는 dry-run이며 `DRY_RUN_READY`와 다음 pulse reason만 출력한다.
+
+```bash
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11
+```
+
+dry-run이 통과하고, 전방 1 m 이상 clear floor, physical remote/E-stop, 앞 단계 remote evidence가
+준비된 경우에만 아래처럼 explicit arm한다.
+
+```bash
+evidence=$(ls -t hardware_measurements/go2_mcf_webrtc_remote_preempt_*.json | head -1)
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11 \
+  --execute --remote-preempt-evidence "$evidence" \
+  --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
+```
+
+`CAMERA_STAGING_READY`만 stage success다. `REMOTE_PREEMPTED`, `ODOM_STALE`,
+`PERCEPTION_REJECTED_*`, `TRAVEL_LIMIT_REACHED`, `BALL_TOO_CLOSE_NO_REVERSE`,
+`CYCLE_LIMIT_REACHED`는 모두 neutral 상태로 멈춘 fail-closed 결과다. 특히
+`CAMERA_STAGING_READY`는 final FR kick lane도 target-hit success도 아니다.
