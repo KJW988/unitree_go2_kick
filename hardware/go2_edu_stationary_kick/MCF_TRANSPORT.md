@@ -184,7 +184,7 @@ ball bearing, Tag 지면투영 target bearing을 확인하고, LiDAR odometry st
 짧은 pulse 뒤 neutral 3회와 재관측을 반복한다. yaw pulse는 0.50초다(이 실물에서 0.20초는
 gait initiation 전에 끝날 수 있었다). 기본 staging depth는 0.65–0.85 m다. 동작
 우선순위는 Tag ground-ray yaw 정렬 → FR lane ball-bearing 측방 보정 → 전진이다. Tag yaw는
-robot 회전으로 먼저 맞추고, lateral 방향은 `--allow-lateral-search`일 때만 0.20초 probe와
+robot 회전으로 먼저 맞추고, lateral 방향은 `--allow-lateral-search`일 때만 0.50초 probe와
 다음 D435i depth 관측의 improvement로 정한다. 따라서 반대 bearing 오차를 이유로 회전 전에
 중단하지 않는다.
 
