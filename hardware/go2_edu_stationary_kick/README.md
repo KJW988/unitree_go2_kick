@@ -9,15 +9,6 @@ Unitree의 공식 Python low-level 예제에서 DDS channel, `LowCmd_`, CRC 사�
 공식 예제와 달리 `MotionSwitcherClient.ReleaseMode()`나 `SportClient.StandDown()`은 절대
 호출하지 않는다. 출처와 차이는 [Unitree SDK2 Python Go2 stand example](https://github.com/unitreerobotics/unitree_sdk2_python/blob/master/example/go2/low_level/go2_stand_example.py)에 기록되어 있다.
 
-## 현재 MCF 보행 상태
-
-이 Go2는 firmware 1.1.11에서 `mcf`가 Functional이고 legacy `sport_mode`가 Close다.
-따라서 기존 SDK `SportClient.Move()` 또는 `ObstaclesAvoidClient.Move()`의 return code만으로
-실제 보행을 판단하거나 autonomous approach를 arm하면 안 된다. 현재 D435i/Tag vision과
-frozen FR kick은 별도로 유지하며, 보행은 MCF WebRTC data-channel의 read-only probe가
-통과한 뒤에만 다시 연결한다. 자세한 compatibility 판정과 project-local setup은
-[MCF_TRANSPORT.md](MCF_TRANSPORT.md)를 따른다.
-
 ## 먼저 실제 PC에서 할 확인
 
 실제 PC에서만 공식 SDK clone 경로에서 설치 여부와 NIC 이름을 확인한다. 이는 구독-only
@@ -99,9 +90,9 @@ score를 화면에서 확인하기 위한 후보 임계값이다. 이 값 하나
 
 공이 FR 최종 킥 위치에서 camera 아래로 사라지는 것은 정상이다. camera가 공/Tag를
 볼 때 target ray를 freeze한 뒤, 마지막 짧은 docking displacement는 Go2 LiDAR odometry로
-추적한다. 아래 bridge는 ROS2 CLI/RMW를 거치지 않고 검증된 Unitree DDS
-`rt/utlidar/robot_odom`만 localhost JSON으로 읽어 내보내며 motion command를 만들지 않는다.
-D435 perception env와 섞지 말고 SDK conda environment의 별도 terminal에서 실행한다.
+추적한다. 아래 bridge는 ROS2 CLI/RMW를 거치지 않고, 검증된 Unitree DDS
+`rt/utlidar/robot_odom`을 localhost JSON으로 읽어 내보낸다. motion command를 만들지
+않는다. D435 perception env와 섞지 말고 SDK conda environment의 별도 terminal에서 실행한다.
 
 ```bash
 cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
@@ -114,6 +105,67 @@ python hardware/go2_edu_stationary_kick/bridge_utlidar_odom.py --interface eth0
 다른 terminal에서 `curl -s http://127.0.0.1:8081/state.json`으로 `position_xyz_m`,
 `yaw_rad`, `receipt_monotonic_s`가 갱신되는지 확인한다. 이 bridge는 camera↔base
 extrinsic 보정 전에는 공 좌표와 직접 결합하지 않는다.
+
+## 공/Tag 정렬 staging 보행
+
+`approach_ball_to_tag.py`는 legacy `SportClient/ObstaclesAvoidClient.Move` 경로를 쓰며,
+현재 Go2 MCF firmware에서는 API acknowledgement가 있어도 실제 보행이 일어나지 않았다.
+**이 script는 실물에서 더 이상 실행하지 않는다.** frozen FR LowCmd kick과 MotionSwitcher
+ownership 변경도 자동화하지 않는다.
+
+실물에서 gait가 확인된 경로는 WebRTC bridge의 App-equivalent
+`rt/wirelesscontroller`뿐이다. 새 `stage_go2_mcf_ball_tag_webrtc.py`는 D435i의 ball/Tag
+camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓰고, 0.20 joystick의 짧은 pulse마다
+neutral 3회와 재관측을 한다. 이 stage는 공/Tag가 camera에서 보이는 0.65–0.85m 준비 위치에서
+멈출 뿐, camera→base→FR extrinsic이 없는 현재 상태에서 final foot lane 또는 킥을 주장하지 않는다.
+
+먼저 D435 perception terminal에서 stream을 유지한다.
+
+```bash
+cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-perception-py38
+unset PYTHONPATH
+python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
+  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 --confidence 0.015
+```
+
+이 firmware에서 WebRTC data-channel 구독은 physical remote input을 되돌려 주지 않는다.
+따라서 virtual joystick 보행과 별개로, SDK environment의 direct DDS watcher를 먼저 유지한다.
+watcher는 publisher를 만들지 않는다. `READY` 뒤 empty floor/E-stop 상태에서 physical remote
+stick을 잠깐 입력해 `physical_input_event_count`를 1 이상으로 만들고, 실행 전에는 stick을
+중립으로 돌린 뒤 0.6초 이상 기다린다.
+
+```bash
+cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-unitree-sdk-py311
+unset PYTHONPATH
+python hardware/go2_edu_stationary_kick/watch_go2_physical_remote_dds.py \
+  --interface eth0
+```
+
+watcher는 별도 terminal에서 계속 유지한다. 다른 WebRTC MCF terminal에서 아래 dry-run이
+`DRY_RUN_READY`를 내는지 확인한다. 이 명령은 robot publisher를 만들지 않는다.
+
+```bash
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11
+```
+
+clear floor, physical remote/E-stop, 위 direct DDS watchdog이 heartbeat와 physical input proof를
+유지하는 경우에만 명시적으로 arm한다.
+continuous drive가 아니라 최대 5개의 bounded pulse와 start-pose에서 최대 0.35m travel만
+허용한다. `CAMERA_STAGING_READY`가 아닌 모든 결과는 neutral로 중단한 것이며, 특히 이 성공은
+final FR foot lane, LowCmd handoff, 킥/Tag hit success가 아니다.
+
+```bash
+status=hardware_measurements/go2_direct_remote_watchdog.json
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11 \
+  --direct-remote-status "$status" --execute \
+  --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
+```
 
 YOLOv5n ONNX artifact와 decoder 출처: [Ultralytics YOLOv5 v7.0 release](https://github.com/ultralytics/yolov5/releases/tag/v7.0),
 [Ultralytics ONNX/OpenCV DNN export guide](https://docs.ultralytics.com/yolov5/tutorials/model-export/).
@@ -320,105 +372,3 @@ python3 scripts/export_vendor_go2_fr_kick_teacher.py \
   --output hardware_measurements/go2_fr_kick_teacher_x10.npz \
   --fr-forward-extension-m 0.10
 ```
-
-
-## MCF WebRTC bounded FR-lane camera staging
-
-`approach_ball_to_tag.py`는 legacy `SportClient/ObstaclesAvoidClient.Move` 경로를 쓰며,
-이 Go2 MCF firmware에서는 API acknowledgement가 있어도 실제 보행이 일어나지 않았다.
-**실물에서 더 이상 실행하지 않는다.** frozen FR LowCmd kick과 MotionSwitcher ownership 변경도
-자동화하지 않는다.
-
-실물에서 gait가 확인된 경로는 WebRTC bridge의 App-equivalent
-`rt/wirelesscontroller`뿐이다. 새 `stage_go2_mcf_ball_tag_webrtc.py`는 D435i의 ball/Tag
-camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓴다. 그러나 ball image center를
-robot center로 만들지 않는다. 실제 정렬 기준은 `FR toe swing/contact lane -> ball center ->
-Tag ground projection`이며, FR의 lateral offset 때문에 정상 ball bearing은 camera 중앙이
-아닐 수 있다.
-
-### 1. Read-only FR lane template capture
-
-먼저 바닥에서 FR toe swing/contact lane, ball center, Tag 지면투영점을 한 선으로 맞춘다.
-그 final FR lane의 yaw/lateral offset을 유지한 채 robot을 0.65–0.85m 뒤로 물려, D435i가
-ball+Tag를 동시에 보는 camera-visible staging spot에 둔다. 이 작업은 tape/물리 remote로
-수동 수행하며 LowCmd/킥은 실행하지 않는다.
-
-그 상태에서 아래 command를 실행한다. 이 파일은 D435i `state.json`만 읽고 robot command를
-전혀 만들지 않는다.
-
-```bash
-cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-perception-py38
-unset PYTHONPATH
-
-python hardware/go2_edu_stationary_kick/capture_d435i_fr_lane_template.py \
-  --tag-id 11 \
-  --operator-confirm FR_LANE_TEMPLATE_SPOT_MARKED
-```
-
-정상은 `D435I_FR_LANE_TEMPLATE_FR_LANE_TEMPLATE_CAPTURED`다. output JSON은
-camera→base→FR extrinsic을 추정하는 파일이 아니라, valid FR lane에서 실제로 관측한
-ball/target bearing template이다.
-
-### 2. Remote preempt read-only evidence
-
-WebRTC MCF terminal에서 physical remote input을 같은 transport가 받는지 먼저 확인한다.
-`READY` 뒤 12초 안에 physical remote stick/button을 한 번 입력한다.
-
-```bash
-conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-mcf-webrtc-py311
-unset PYTHONPATH
-python hardware/go2_edu_stationary_kick/probe_go2_mcf_webrtc_remote_preempt.py \
-  --robot-ip 192.168.123.161
-```
-
-정상은 `MCF_WEBRTC_REMOTE_PREEMPT_PHYSICAL_INPUT_OBSERVED`다.
-
-### 3. FR-lane dry-run, 그 다음 bounded stage
-
-먼저 아래 dry-run에서 template과 현재 perception이 모두 통과하는지 확인한다. 이 명령은
-robot publisher를 만들지 않는다.
-
-```bash
-template=$(ls -t hardware_measurements/d435i_fr_ball_tag_camera_stage_template_*.json | head -1)
-python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
-  --robot-ip 192.168.123.161 --tag-id 11 \
-  --fr-lane-template "$template"
-```
-
-clear floor, physical remote/E-stop, template, remote evidence가 모두 준비된 경우에만
-명시적으로 arm한다. continuous drive가 아니라 최대 5개의 bounded pulse와 start-pose에서
-최대 0.35m travel만 허용한다.
-
-```bash
-evidence=$(ls -t hardware_measurements/go2_mcf_webrtc_remote_preempt_*.json | head -1)
-python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
-  --robot-ip 192.168.123.161 --tag-id 11 \
-  --fr-lane-template "$template" \
-  --execute --remote-preempt-evidence "$evidence" \
-  --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
-```
-
-`CAMERA_STAGING_READY`만 stage success다. `FR_LANE_LATERAL_ALIGNMENT_REQUIRED`,
-`REMOTE_PREEMPTED`, `ODOM_STALE`, `PERCEPTION_REJECTED_*`,
-`TRAVEL_LIMIT_REACHED`, `BALL_TOO_CLOSE_NO_REVERSE`, `CYCLE_LIMIT_REACHED`는 모두
-neutral 상태로 멈춘 fail-closed 결과다. 특히 `CAMERA_STAGING_READY`는 final FR kick
-lane도 target-hit success도 아니다.
-
-
-### YOLO11n immediate replacement
-
-`YOLOv5n` smoke model 대신 공식 COCO pretrained `YOLO11n` ONNX를 바로 사용할 수 있다.
-이것은 fine-tune model이 아니므로 ball confidence 하나만으로 보행을 허용하지 않는다.
-D435i depth, AprilTag target line, odom stale gate는 그대로 유지한다.
-
-```bash
-python hardware/go2_edu_stationary_kick/fetch_yolo11n_model.py
-python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
-  --model hardware_models/yolo11n-v8.3.0.onnx \
-  --host 0.0.0.0 --port 8080 --confidence 0.015
-```
-
-stream 시작 시 OpenCV DNN이 이 ONNX graph를 load하지 못하면 motion runner를 실행하지
-않는다. 그 경우 TensorRT engine을 **해당 Jetson에서** build해 runtime을 교체해야 한다.
