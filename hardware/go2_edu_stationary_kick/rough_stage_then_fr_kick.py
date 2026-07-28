@@ -52,6 +52,9 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--observation-timeout-s", str(args.stage_observation_timeout_s),
         "--lane-axis-bearing-rad", str(args.lane_axis_bearing_rad),
         "--target-bearing-tolerance-rad", str(args.stage_target_bearing_tolerance_rad),
+        "--min-odom-stop-active-s", str(args.stage_min_odom_stop_active_s),
+        "--odom-stop-confirm-samples", str(args.stage_odom_stop_confirm_samples),
+        "--camera-stage-entry-slack-m", str(args.stage_camera_entry_slack_m),
         "--direct-remote-status", str(args.direct_remote_status),
         "--allow-lateral-search",
         "--forward-pulse-s", str(args.stage_forward_pulse_s),
@@ -109,6 +112,9 @@ def main() -> int:
         help="body/FR과 평행하게 맞출 ball→Tag 지면축의 camera bearing",
     )
     parser.add_argument("--stage-target-bearing-tolerance-rad", type=float, default=0.03)
+    parser.add_argument("--stage-min-odom-stop-active-s", type=float, default=0.60)
+    parser.add_argument("--stage-odom-stop-confirm-samples", type=int, default=3)
+    parser.add_argument("--stage-camera-entry-slack-m", type=float, default=0.04)
     parser.add_argument("--camera-to-fr-forward-m", type=float, required=True)
     parser.add_argument("--fr-to-ball-forward-m", type=float, required=True)
     parser.add_argument("--final-dock-max-m", type=float, default=0.85)
@@ -149,6 +155,12 @@ def main() -> int:
         parser.error("--lane-axis-bearing-rad는 finite [-0.35, 0.35] 범위여야 합니다")
     if not 0.01 <= args.stage_target_bearing_tolerance_rad <= 0.20:
         parser.error("--stage-target-bearing-tolerance-rad는 [0.01, 0.20] 범위여야 합니다")
+    if not 0.20 <= args.stage_min_odom_stop_active_s <= 1.0:
+        parser.error("--stage-min-odom-stop-active-s는 [0.20, 1.0] 범위여야 합니다")
+    if not 2 <= args.stage_odom_stop_confirm_samples <= 10:
+        parser.error("--stage-odom-stop-confirm-samples는 [2, 10] 범위여야 합니다")
+    if not 0.0 <= args.stage_camera_entry_slack_m <= 0.06:
+        parser.error("--stage-camera-entry-slack-m은 [0.0, 0.06] 범위여야 합니다")
     if not (
         -0.40 <= args.camera_to_fr_forward_m <= 0.40
         and 0.0 < args.fr_to_ball_forward_m <= 0.40
