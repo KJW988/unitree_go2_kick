@@ -171,6 +171,13 @@ python hardware/go2_edu_stationary_kick/watch_go2_physical_remote_dds.py \
 다음 50 Hz virtual packet 전에 neutralize한다. 이것은 firmware-level controller arbitration이
 아닌 user-space fail-closed guard이므로 physical remote/E-stop은 계속 operator의 1차 안전 수단이다.
 
+WebRTC virtual joystick도 같은 `rt/wirelesscontroller` DDS topic에 echo된다. Unitree SDK
+`ChannelSubscriber` callback은 writer identity를 넘기지 않으므로 watcher는 stage가 pulse 직전에
+쓰는 좁은 local echo-window의 동일 joystick 값만 self-echo로 제외한다. 다른 값의 stick/button은
+기존처럼 preempt한다. window 중 physical remote가 virtual packet과 완전히 같은 값까지 보내면
+구별 불가하므로, 이 제한은 status JSON의
+`same_value_physical_input_during_echo_window_unobservable=true`로 명시한다.
+
 ## D435i ball/Tag camera staging (FR kick 전용 아님)
 
 `approach_ball_to_tag.py`는 legacy `SportClient/ObstaclesAvoidClient.Move` 경로를 사용하며
