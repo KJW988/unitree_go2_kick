@@ -48,6 +48,7 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--tag-id", str(args.tag_id),
         "--fr-lane-template", str(args.fr_lane_template),
         "--perception-url", args.perception_url,
+        "--observation-timeout-s", str(args.stage_observation_timeout_s),
         "--direct-remote-status", str(args.direct_remote_status),
         "--allow-lateral-search",
         "--max-cycles", str(args.max_stage_cycles),
@@ -85,6 +86,10 @@ def main() -> int:
     parser.add_argument("--fr-lane-template", type=Path, required=True)
     parser.add_argument("--direct-remote-status", type=Path, required=True)
     parser.add_argument("--perception-url", default="http://127.0.0.1:8080/state.json")
+    parser.add_argument(
+        "--stage-observation-timeout-s", type=float, default=5.0,
+        help="각 staging 관측에서 intermittent detector miss를 기다리는 bounded 시간",
+    )
     parser.add_argument("--max-stage-cycles", type=int, default=5)
     parser.add_argument("--max-stage-travel-m", type=float, default=0.35)
     parser.add_argument("--interface", default="eth0")
@@ -113,6 +118,8 @@ def main() -> int:
         parser.error("--execute에는 --operator-confirm {}가 정확히 필요합니다".format(CONFIRMATION))
     if args.max_stage_cycles < 1 or not 0.0 < args.max_stage_travel_m <= 0.35:
         parser.error("max-stage-cycles는 1 이상, max-stage-travel-m은 (0, 0.35]여야 합니다")
+    if not 1.0 <= args.stage_observation_timeout_s <= 10.0:
+        parser.error("--stage-observation-timeout-s는 [1.0, 10.0] 범위여야 합니다")
     if args.execute and (args.kick_hold_after_s is None or args.kick_hold_after_s <= 0.0):
         parser.error("--execute에는 양수 --kick-hold-after-s가 필요합니다")
     if not args.lowcmd_python.is_file() or not args.trajectory.is_file():
