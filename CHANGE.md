@@ -2,6 +2,18 @@
 
 Log of all changes made during the Go2 Kick RL debugging and implementation task.
 
+## 2026-07-28 — ball→Tag heading 및 WebRTC self-echo fail-closed 보정
+
+- 실물 final dock에서 프로그램이 보낸 `ly=0.2` DDS echo가 physical remote로 오인되어
+  0.466m에서 중단된 로그에 따라 watcher status에 echo protocol version을 추가했다.
+  stage는 최신 protocol과 동일 echo-window 경로를 확인하지 못하면 execute를 거부한다.
+- 통합 runner는 captured range/ball-Tag 상대 bearing은 유지하면서 ball→Tag 지면축을
+  camera/robot 전진축 `0 rad`에 맞춘다. heading deadband는 0.03rad이며 yaw pulse는
+  LiDAR odometry가 요청한 yaw 변화량에 도달하면 0.50초 전에 neutralize할 수 있다.
+- FR 접촉 거리와 swing 크기는 runtime 실측값으로 계속 명시하며, 기존 trajectory 자체는
+  변경하지 않았다. `--fr-swing-scale 1.2`는 검증된 [0.8, 1.3] clamp 안에서 FR swing
+  delta만 20% 확대한다.
+
 ## 2026-07-28 — D435i intermittent ball detection hold
 
 - `stream_d435i_yolo_ball.py`가 YOLO 단일-frame miss 시 마지막 bbox를 최대 0.50초만
