@@ -200,6 +200,17 @@ gait initiation 전에 끝날 수 있었다). 기본 staging depth는 0.65–0.8
 `ball.detection_age_s`가 포함되며 stage는 0.50초보다 오래된 bbox를 거부한다. 각 관측의
 bounded retry는 5초다. 즉 짧은 frame drop만 흡수하고 장시간 공이 사라지면 계속 fail-closed한다.
 
+0.50초마다 neutral했던 forward pulse는 실측에서 두 번 합계 약 0.03m의 gait-initiation만
+만들었다. forward 상한은 검증된 calibration과 같은 2.0초로 늘렸지만 open-loop로 끝까지
+보내지 않는다. pulse 시작 LiDAR yaw로 투영한 odometry가 매 cycle 목표(기본 최대 0.12m)에
+도달하면 그 packet loop 안에서 즉시 neutralize한다.
+
+명시 `--enable-final-dock`에서는 camera staging의 마지막 floor plane으로 camera ground
+projection→ball center 거리를 계산한다. 여기서 실측 camera→FR forward와 FR→ball-center
+forward 합을 빼고, 남은 거리만 최대 4초/0.60m의 continuous joystick으로 보낸다. physical
+remote watchdog과 odometry stale gate는 계속 적용되며 `FINAL_DOCKING_READY`가 아니면 통합
+runner가 LowCmd kick을 호출하지 않는다.
+
 `CAMERA_STAGING_READY`에는 실측 camera FR lane template 기준 `kick_ready.eligible=true`가
 기록되지만 LowCmd를 자동으로 시작하지 않는다. 현재 MCF→LowCmd release와 LowCmd→MCF
 handback은 실물에서 토크 공백/떨림/주저앉음을 보였고 firmware-level atomic handoff API가
