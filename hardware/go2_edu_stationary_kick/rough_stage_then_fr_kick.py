@@ -103,8 +103,8 @@ def main() -> int:
     parser.add_argument("--stage-max-forward-pulse-travel-m", type=float, default=0.12)
     parser.add_argument("--camera-to-fr-forward-m", type=float, required=True)
     parser.add_argument("--fr-to-ball-forward-m", type=float, required=True)
-    parser.add_argument("--final-dock-max-m", type=float, default=0.60)
-    parser.add_argument("--final-dock-max-duration-s", type=float, default=4.0)
+    parser.add_argument("--final-dock-max-m", type=float, default=0.85)
+    parser.add_argument("--final-dock-max-duration-s", type=float, default=5.0)
     parser.add_argument("--interface", default="eth0")
     parser.add_argument("--lowcmd-python", type=Path, required=True)
     parser.add_argument("--trajectory", type=Path, required=True)
@@ -138,14 +138,14 @@ def main() -> int:
     if not 0.03 <= args.stage_max_forward_pulse_travel_m <= 0.15:
         parser.error("--stage-max-forward-pulse-travel-m은 [0.03, 0.15] 범위여야 합니다")
     if not (
-        0.0 < args.camera_to_fr_forward_m <= 0.40
+        -0.40 <= args.camera_to_fr_forward_m <= 0.40
         and 0.0 < args.fr_to_ball_forward_m <= 0.40
     ):
-        parser.error("camera-to-FR/fr-to-ball forward 실측값은 (0, 0.40] 범위여야 합니다")
-    if not 0.05 <= args.final_dock_max_m <= 0.60:
-        parser.error("--final-dock-max-m은 [0.05, 0.60] 범위여야 합니다")
-    if not 1.0 <= args.final_dock_max_duration_s <= 4.0:
-        parser.error("--final-dock-max-duration-s는 [1.0, 4.0] 범위여야 합니다")
+        parser.error("camera-to-FR은 signed [-0.40,0.40], FR-to-ball은 (0,0.40]이어야 합니다")
+    if not 0.05 <= args.final_dock_max_m <= 0.85:
+        parser.error("--final-dock-max-m은 [0.05, 0.85] 범위여야 합니다")
+    if not 1.0 <= args.final_dock_max_duration_s <= 5.0:
+        parser.error("--final-dock-max-duration-s는 [1.0, 5.0] 범위여야 합니다")
     if args.execute and (args.kick_hold_after_s is None or args.kick_hold_after_s <= 0.0):
         parser.error("--execute에는 양수 --kick-hold-after-s가 필요합니다")
     if not args.lowcmd_python.is_file() or not args.trajectory.is_file():
