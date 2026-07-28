@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import socket
 import threading
 import time
@@ -36,6 +37,54 @@ DEFAULT_UDP_PORT = 18181
 DEFAULT_DEADZONE = 0.15
 DEFAULT_HEARTBEAT_HZ = 20.0
 VIRTUAL_ECHO_PROTOCOL_VERSION = 1
+
+# Go2 URDF의 FR chain을 그대로 옮긴 read-only forward kinematics 상수다.
+# 출처: resources/robots/go1/go2/urdf/go2.urdf
+# SDK motor 순서는 공식 Go2 low-level example과 이 프로젝트의 검증된 mapping에서
+# FR hip/thigh/calf = 0/1/2다. WebRTC SportModeState의 foot_position_body는 이
+# firmware에서 전부 0이므로 automatic geometry에 사용하지 않는다.
+FR_HIP_ORIGIN_BODY_M = (0.1934, -0.0465, 0.0)
+FR_HIP_TO_THIGH_Y_M = -0.0955
+FR_THIGH_LENGTH_M = 0.213
+FR_CALF_LENGTH_M = 0.213
+FR_MOTOR_INDICES = (0, 1, 2)
+
+
+def fr_foot_kinematics_body(
+    joint_q_rad: tuple[float, float, float],
+    joint_dq_rad_s: tuple[float, float, float],
+) -> tuple[list[float], list[float]]:
+    """Go2 URDF FR foot 중심의 body-frame 위치/속도를 계산한다.
+
+    q0는 x축 hip roll, q1/q2는 y축 thigh/calf pitch다. 아래 식은 URDF의
+    base→hip→thigh→calf→foot 변환을 전개한 것이며 command를 만들지 않는다.
+    """
+    q0, q1, q2 = joint_q_rad
+    dq0, dq1, dq2 = joint_dq_rad_s
+    s0, c0 = math.sin(q0), math.cos(q0)
+    s1, c1 = math.sin(q1), math.cos(q1)
+    s12, c12 = math.sin(q1 + q2), math.cos(q1 + q2)
+
+    inner_x = -FR_THIGH_LENGTH_M * s1 - FR_CALF_LENGTH_M * s12
+    inner_y = FR_HIP_TO_THIGH_Y_M
+    inner_z = -FR_THIGH_LENGTH_M * c1 - FR_CALF_LENGTH_M * c12
+    position = [
+        FR_HIP_ORIGIN_BODY_M[0] + inner_x,
+        FR_HIP_ORIGIN_BODY_M[1] + c0 * inner_y - s0 * inner_z,
+        FR_HIP_ORIGIN_BODY_M[2] + s0 * inner_y + c0 * inner_z,
+    ]
+
+    dx_dq1 = -FR_THIGH_LENGTH_M * c1 - FR_CALF_LENGTH_M * c12
+    dx_dq2 = -FR_CALF_LENGTH_M * c12
+    dz_dq1 = FR_THIGH_LENGTH_M * s1 + FR_CALF_LENGTH_M * s12
+    dz_dq2 = FR_CALF_LENGTH_M * s12
+    inner_z_speed = dz_dq1 * dq1 + dz_dq2 * dq2
+    velocity = [
+        dx_dq1 * dq1 + dx_dq2 * dq2,
+        (-s0 * inner_y - c0 * inner_z) * dq0 - s0 * inner_z_speed,
+        (c0 * inner_y - s0 * inner_z) * dq0 + c0 * inner_z_speed,
+    ]
+    return position, velocity
 
 
 class RemoteWatchState:
@@ -55,6 +104,13 @@ class RemoteWatchState:
         self._last_udp_monotonic_s = float("-inf")
         self.virtual_echo_ignored_count = 0
         self.last_virtual_echo: dict[str, float | int] | None = None
+        self.lowstate_sample_count = 0
+        self.last_lowstate_monotonic_s: float | None = None
+        self.fr_joint_q_rad: list[float] | None = None
+        self.fr_joint_dq_rad_s: list[float] | None = None
+        self.fr_foot_position_body_m: list[float] | None = None
+        self.fr_foot_speed_body_m_s: list[float] | None = None
+        self.lowstate_error: str | None = "rt/lowstate sample을 아직 받지 못했습니다"
         self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def _is_current_virtual_echo(self, sample: dict[str, float | int], now: float) -> bool:
@@ -115,13 +171,42 @@ class RemoteWatchState:
                 # stage가 아직 UDP listener를 열기 전인 것은 정상이다. 상태 파일은 유지한다.
                 pass
 
+    def on_lowstate(self, message: Any) -> None:
+        """FR motor 0/1/2를 읽어 URDF FK만 계산한다; publisher는 만들지 않는다."""
+        try:
+            motor_state = message.motor_state
+            if len(motor_state) < 3:
+                raise ValueError("motor_state가 3개보다 적습니다")
+            q = tuple(float(motor_state[index].q) for index in FR_MOTOR_INDICES)
+            dq = tuple(float(motor_state[index].dq) for index in FR_MOTOR_INDICES)
+            if not all(math.isfinite(value) for value in (*q, *dq)):
+                raise ValueError("FR q/dq에 non-finite 값이 있습니다")
+            position, velocity = fr_foot_kinematics_body(q, dq)
+        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            with self._lock:
+                self.lowstate_error = str(error)
+            return
+        with self._lock:
+            self.lowstate_sample_count += 1
+            self.last_lowstate_monotonic_s = time.monotonic()
+            self.fr_joint_q_rad = list(q)
+            self.fr_joint_dq_rad_s = list(dq)
+            self.fr_foot_position_body_m = position
+            self.fr_foot_speed_body_m_s = velocity
+            self.lowstate_error = None
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            now = time.monotonic()
+            lowstate_age_s = (
+                None if self.last_lowstate_monotonic_s is None
+                else max(0.0, now - self.last_lowstate_monotonic_s)
+            )
             return {
                 "schema_version": 1,
                 "kind": "go2_direct_dds_physical_remote_watchdog",
                 "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-                "heartbeat_monotonic_s": time.monotonic(),
+                "heartbeat_monotonic_s": now,
                 "ready": self.ready,
                 "deadzone": self.deadzone,
                 "physical_input_event_count": self.event_count,
@@ -134,6 +219,25 @@ class RemoteWatchState:
                 "writer_identity_available": False,
                 "same_value_physical_input_during_echo_window_unobservable": True,
                 "udp_target": {"host": self.udp_host, "port": self.udp_port},
+                "fr_foot_kinematics": {
+                    "valid": self.lowstate_error is None,
+                    "source": "direct DDS rt/lowstate motor_state[0:3] + Go2 URDF FK",
+                    "motor_indices": list(FR_MOTOR_INDICES),
+                    "sample_count": self.lowstate_sample_count,
+                    "receipt_monotonic_s": self.last_lowstate_monotonic_s,
+                    "age_s": lowstate_age_s,
+                    "joint_q_rad": self.fr_joint_q_rad,
+                    "joint_dq_rad_s": self.fr_joint_dq_rad_s,
+                    "foot_position_body_m": self.fr_foot_position_body_m,
+                    "foot_speed_body_m_s": self.fr_foot_speed_body_m_s,
+                    "urdf_geometry_m": {
+                        "hip_origin_body": list(FR_HIP_ORIGIN_BODY_M),
+                        "hip_to_thigh_y": FR_HIP_TO_THIGH_Y_M,
+                        "thigh_length": FR_THIGH_LENGTH_M,
+                        "calf_length": FR_CALF_LENGTH_M,
+                    },
+                    "error": self.lowstate_error,
+                },
                 "motion_commands_sent": False,
             }
 
@@ -159,7 +263,7 @@ def main() -> int:
         parser.error("deadzone/udp-port/heartbeat-hz 값이 유효하지 않습니다")
     try:
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import WirelessController_
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_, WirelessController_
     except ImportError as error:
         raise RuntimeError(
             "이 watcher는 .conda-unitree-sdk-py311의 unitree_sdk2py가 필요합니다: {}".format(error)
@@ -169,10 +273,13 @@ def main() -> int:
     ChannelFactoryInitialize(0, args.interface)
     subscriber = ChannelSubscriber("rt/wirelesscontroller", WirelessController_)
     subscriber.Init(state.on_wireless, 10)
+    lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
+    lowstate_subscriber.Init(state.on_lowstate, 10)
     state.ready = True
     atomic_write_json(args.status_file, state.snapshot())
     print(
         "DIRECT_DDS_REMOTE_WATCHDOG_READY interface={} status_file={} echo_window={} udp={}:{}; "
+        "FR FK는 rt/lowstate motor[0:3]에서 read-only로 갱신됩니다. "
         "physical remote stick/button을 한 번 입력해 proof를 남기세요.".format(
             args.interface, args.status_file, args.virtual_echo_window, args.udp_host, args.udp_port
         ),
