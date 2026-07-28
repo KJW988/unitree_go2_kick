@@ -195,10 +195,12 @@ neutralize한다. duration을 길게 만든 것이 open-loop 이동거리 증가
 
 통합 runner는 camera staging 뒤 `--camera-to-fr-forward-m`과
 `--fr-to-ball-forward-m`의 실측 signed-forward 합을 최종 camera-ground→ball-center 목표로
-사용한다. D435i floor plane에서 현재 ground range를 계산하고 그 차이만 WebRTC joystick으로
-최대 4초/0.60m 동안 보내며, LiDAR odometry가 목표를 확인해야만 `FINAL_DOCKING_READY`가 된다.
-그 결과가 아니면 LowCmd child를 시작하지 않는다. 두 forward 값은 모두 **camera ground
-projection→FR→ball center가 robot 전방(+)**이라는 설치에서만 양수로 넣는다.
+사용한다. D435i floor plane의 ball→Tag 축에 현재 ball ground 위치를 투영하고 그 차이만
+WebRTC joystick으로 최대 5초/0.85m 동안 보내며, LiDAR odometry가 목표를 확인해야만
+`FINAL_DOCKING_READY`가 된다. 그 결과가 아니면 LowCmd child를 시작하지 않는다.
+camera ground projection→FR은 robot 전방을 `+`, 뒤쪽을 `-`로 넣고 FR→ball center는
+전방 양수로 넣는다. 예를 들어 head lens가 FR보다 0.15m 앞이면 camera→FR은 `-0.15`,
+FR→ball은 `+0.15`다.
 
 ```bash
 python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py --help
