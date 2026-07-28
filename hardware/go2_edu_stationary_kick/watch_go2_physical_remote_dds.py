@@ -35,6 +35,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 18181
 DEFAULT_DEADZONE = 0.15
 DEFAULT_HEARTBEAT_HZ = 20.0
+VIRTUAL_ECHO_PROTOCOL_VERSION = 1
 
 
 class RemoteWatchState:
@@ -127,6 +128,7 @@ class RemoteWatchState:
                 "last_active_monotonic_s": self.last_active_monotonic_s,
                 "last_event": self.last_event,
                 "virtual_echo_window": str(self.virtual_echo_window),
+                "virtual_echo_protocol_version": VIRTUAL_ECHO_PROTOCOL_VERSION,
                 "virtual_echo_ignored_count": self.virtual_echo_ignored_count,
                 "last_virtual_echo": self.last_virtual_echo,
                 "writer_identity_available": False,
