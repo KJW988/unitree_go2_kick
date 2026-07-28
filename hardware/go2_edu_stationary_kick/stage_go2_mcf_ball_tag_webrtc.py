@@ -52,7 +52,8 @@ REOBSERVE_SETTLE_S = 0.50
 MAX_STATIC_BASELINE_SPAN_M = 0.04
 MAX_ODOM_STALE_S = 0.50
 MAX_PERCEPTION_AGE_S = 0.35
-OBSERVATION_TIMEOUT_S = 2.0
+MAX_BALL_DETECTION_AGE_S = 0.50
+OBSERVATION_TIMEOUT_S = 5.0
 MIN_BALL_CONFIDENCE = 0.015
 STAGE_RANGE_MIN_M = 0.65
 STAGE_RANGE_MAX_M = 0.85
@@ -92,6 +93,7 @@ class Perception:
     target_bearing_rad: float
     target_distance_m: float
     age_s: float
+    ball_detection_age_s: float
 
 
 @dataclass(frozen=True)
@@ -117,21 +119,25 @@ def point3(value: Any) -> tuple[float, float, float] | None:
     return result if all(math.isfinite(component) for component in result) else None
 
 
-def fetch_perception(url: str, tag_id: int, timeout_s: float) -> Perception | None:
-    """stream의 camera-frame ground geometry를 읽는다. base/FR 좌표로 변환하지 않는다."""
+def fetch_perception_with_reason(
+    url: str, tag_id: int, timeout_s: float,
+) -> tuple[Perception | None, str]:
+    """stream geometry와 누락 원인을 읽는다. base/FR 좌표로 변환하지 않는다."""
     try:
         with urllib.request.urlopen(url, timeout=timeout_s) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError, urllib.error.URLError):
-        return None
+        return None, "perception_http_unavailable"
     if not isinstance(payload, dict) or not payload.get("ready"):
-        return None
+        return None, "perception_not_ready"
     ball = payload.get("ball")
     target = payload.get("target_line")
-    if not isinstance(ball, dict) or not isinstance(target, dict):
-        return None
+    if not isinstance(ball, dict):
+        return None, "ball_not_detected"
+    if not isinstance(target, dict):
+        return None, "tag_or_target_line_missing"
     if int(target.get("tag_id", -1)) != tag_id:
-        return None
+        return None, "requested_tag_missing"
     ball_ground = point3(ball.get("ground_camera_xyz_m"))
     target_unit = point3(target.get("unit_camera_xyz"))
     try:
@@ -139,16 +145,20 @@ def fetch_perception(url: str, tag_id: int, timeout_s: float) -> Perception | No
         ball_range = float(ball["depth_range_m"])
         target_distance = float(target["distance_m"])
         stamp = float(payload["stamp_monotonic_s"])
+        detection_age = float(ball["detection_age_s"])
     except (KeyError, TypeError, ValueError):
-        return None
+        return None, "perception_fields_invalid"
     if (
         ball_ground is None
         or target_unit is None
-        or not all(math.isfinite(value) for value in (confidence, ball_range, target_distance, stamp))
+        or not all(math.isfinite(value) for value in (
+            confidence, ball_range, target_distance, stamp, detection_age,
+        ))
         or ball_range <= 0.0
         or target_distance < 0.5
+        or detection_age < 0.0
     ):
-        return None
+        return None, "perception_geometry_invalid"
     # RealSense optical frame: +x image-right, +z forward. y는 floor plane vertical 성분이다.
     return Perception(
         ball_range_m=ball_range,
@@ -157,7 +167,13 @@ def fetch_perception(url: str, tag_id: int, timeout_s: float) -> Perception | No
         target_bearing_rad=math.atan2(target_unit[0], target_unit[2]),
         target_distance_m=target_distance,
         age_s=time.monotonic() - stamp,
-    )
+        ball_detection_age_s=detection_age,
+    ), "perception_sample_valid"
+
+
+def fetch_perception(url: str, tag_id: int, timeout_s: float) -> Perception | None:
+    """기존 read-only caller용 호환 wrapper다."""
+    return fetch_perception_with_reason(url, tag_id, timeout_s)[0]
 
 
 async def stable_perception(args: argparse.Namespace) -> tuple[Perception | None, str]:
@@ -166,9 +182,11 @@ async def stable_perception(args: argparse.Namespace) -> tuple[Perception | None
     deadline = time.monotonic() + args.observation_timeout_s
     latest_reason = "perception_missing"
     while len(samples) < args.observation_count and time.monotonic() < deadline:
-        sample = fetch_perception(args.perception_url, args.tag_id, args.http_timeout_s)
+        sample, sample_reason = fetch_perception_with_reason(
+            args.perception_url, args.tag_id, args.http_timeout_s,
+        )
         if sample is None:
-            latest_reason = "perception_missing"
+            latest_reason = sample_reason
             await asyncio.sleep(args.observation_interval_s)
             continue
         if sample.age_s > args.perception_max_age_s:
@@ -177,6 +195,10 @@ async def stable_perception(args: argparse.Namespace) -> tuple[Perception | None
             continue
         if sample.ball_confidence < args.min_ball_confidence:
             latest_reason = "ball_confidence_low"
+            await asyncio.sleep(args.observation_interval_s)
+            continue
+        if sample.ball_detection_age_s > args.ball_detection_max_age_s:
+            latest_reason = "ball_detection_stale"
             await asyncio.sleep(args.observation_interval_s)
             continue
         if not 0.30 <= sample.ball_range_m <= 3.0:
@@ -809,6 +831,7 @@ def main() -> int:
     parser.add_argument("--connect-timeout-s", type=float, default=12.0)
     parser.add_argument("--http-timeout-s", type=float, default=0.25)
     parser.add_argument("--perception-max-age-s", type=float, default=MAX_PERCEPTION_AGE_S)
+    parser.add_argument("--ball-detection-max-age-s", type=float, default=MAX_BALL_DETECTION_AGE_S)
     parser.add_argument("--min-ball-confidence", type=float, default=MIN_BALL_CONFIDENCE)
     parser.add_argument("--observation-count", type=int, default=3)
     parser.add_argument("--observation-interval-s", type=float, default=0.10)
@@ -869,6 +892,7 @@ def main() -> int:
         args.observation_interval_s, args.observation_timeout_s,
         args.reobserve_settle_s, args.max_travel_m,
         args.max_odom_stale_s, args.direct_remote_max_age_s, args.direct_remote_hold_s,
+        args.ball_detection_max_age_s,
     ) <= 0.0 or not 1 <= args.direct_remote_udp_port <= 65535:
         parser.error("pulse/settle/travel/stale/direct-remote 값은 양수 범위여야 합니다")
 
