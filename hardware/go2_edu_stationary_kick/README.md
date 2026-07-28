@@ -213,6 +213,19 @@ camera ground projection→FR은 robot 전방을 `+`, 뒤쪽을 `-`로 넣고 FR
 전방 양수로 넣는다. 예를 들어 head lens가 FR보다 0.15m 앞이면 camera→FR은 `-0.15`,
 FR→ball은 `+0.15`다.
 
+실물 최종 dock에서 FR→ball 약 0.20m까지 gait를 유지하자 마지막 FR swing이 LowCmd보다
+먼저 공을 접촉했다. 따라서 `--final-gait-to-kick-clearance-m` 기본 0.08m를 추가해 보행은
+kick 목표보다 일찍 끝낸다. `camera→FR=-0.15`, `FR→ball=+0.18`이면 보행 종료 목표는
+camera→ball `+0.11m`, FR→ball `+0.26m`이며 남은 거리는 1.2x FR swing이 담당한다.
+neutral 뒤에는 최근 0.40초의 MCF planar/yaw velocity와 LiDAR odometry span이 모두 정지
+gate를 통과해야만 LowCmd child를 시작한다. 이 clearance는 첫 보수값이며 실물 접촉/미접촉
+결과로만 줄인다.
+
+5초 pulse는 Python scheduling 지연으로 nominal wall time보다 길어질 수 있다. 고정 expiry가
+먼저 끝나 virtual `ly=0.2` echo를 물리 remote로 오인하지 않도록, stage는 active 동안
+0.20초마다 0.50초 exact-value lease를 갱신하고 neutral 뒤 즉시 해제한다. writer identity가
+없는 한 동일 값의 동시 물리 입력을 구분할 수 없다는 기존 제한과 E-stop 우선 원칙은 같다.
+
 통합 runner의 기본 `--lane-axis-bearing-rad 0.0`은 D435i가 robot 전진축과 평행하게
 장착됐다는 현장 조건에서 ball→Tag 지면축을 body/FR 전진축과 평행하게 만든다. captured
 template의 range와 ball-Tag 상대 bearing은 그대로 사용한다. heading deadband는 0.03rad이며,
