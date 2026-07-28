@@ -190,10 +190,10 @@ ball bearing, Tag 지면투영 target bearing을 확인하고, LiDAR odometry st
 0.35 m travel hard limit을 통과할 때만 동작한다. continuous drive가 아니라 0.20 magnitude의
 짧은 pulse 뒤 neutral 3회와 재관측을 반복한다. yaw pulse는 0.50초다(이 실물에서 0.20초는
 gait initiation 전에 끝날 수 있었다). 기본 staging depth는 0.65–0.85 m다. 동작
-우선순위는 Tag ground-ray yaw 정렬 → FR lane ball-bearing 측방 보정 → 전진이다. Tag yaw는
-robot 회전으로 먼저 맞추고, lateral 방향은 `--allow-lateral-search`일 때만 0.50초 probe와
-다음 D435i depth 관측의 improvement로 정한다. 따라서 반대 bearing 오차를 이유로 회전 전에
-중단하지 않는다.
+우선순위는 Tag ground-ray yaw로 body/FR 방향을 kick lane과 평행하게 정렬 → FR toe→ball→Tag
+상대 bearing의 측방 보정 → yaw 재확인 → 전진이다. robot yaw는 공과 Tag를 거의 함께 회전시키므로
+상대적인 lateral lane 오차를 고칠 수 없다. 따라서 yaw 정렬 뒤 남은 상대 bearing을
+`--allow-lateral-search`의 0.50초 lateral probe와 다음 D435i depth 관측으로 보정한다.
 
 `CAMERA_STAGING_READY`에는 실측 camera FR lane template 기준 `kick_ready.eligible=true`가
 기록되지만 LowCmd를 자동으로 시작하지 않는다. 현재 MCF→LowCmd release와 LowCmd→MCF
@@ -220,13 +220,14 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
 
-dry-run의 `turn_to_tag_ray`는 첫 실행이 yaw pulse만 한다는 뜻이다. yaw 뒤
-`lateral_to_fr_lane`이면 다음 one-cycle probe를 명시적으로 arm한다.
+dry-run의 `lateral_to_fr_lane`는 FR lane으로 게걸음해야 한다는 뜻이다. 먼저 아래처럼
+lateral pulse와 재관측만 수행해 `improvement_rad` 및 `recommended_lateral_sign`을 확인한다.
 
 ```bash
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
-  --direct-remote-status "$status" --allow-lateral-search --max-cycles 1 --execute \
+  --direct-remote-status "$status" --allow-lateral-search --lateral-probe-only \
+  --max-cycles 2 --execute \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
 
