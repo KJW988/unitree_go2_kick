@@ -80,6 +80,19 @@ class Perception:
     age_s: float
 
 
+@dataclass(frozen=True)
+class FrLaneTemplate:
+    """실제 FR toe→ball→Tag 선상 staging spot에서 read-only로 얻은 camera 목표값."""
+
+    tag_id: int
+    desired_ball_range_m: float
+    range_tolerance_m: float
+    desired_ball_bearing_rad: float
+    desired_target_bearing_rad: float
+    ball_bearing_tolerance_rad: float
+    target_bearing_tolerance_rad: float
+
+
 def point3(value: Any) -> tuple[float, float, float] | None:
     if not isinstance(value, list) or len(value) != 3:
         return None
@@ -263,16 +276,63 @@ def load_remote_evidence(path: Path) -> tuple[bool, str]:
     return True, "remote_evidence_pass"
 
 
-def action_for(perception: Perception, args: argparse.Namespace) -> tuple[str, float, float, float]:
-    """camera-centered stage only: yaw, then forward; lateral/FR docking은 하지 않는다."""
-    if perception.ball_range_m < args.stage_range_min_m:
-        return "ball_too_close", 0.0, 0.0, 0.0
-    if abs(perception.target_bearing_rad) > args.target_bearing_tolerance_rad:
+def load_fr_lane_template(path: Path | None, tag_id: int) -> tuple[FrLaneTemplate | None, str]:
+    """camera-center가 아닌 실제 FR lane template만 stage target으로 허용한다."""
+    if path is None:
+        return None, "fr_lane_template_required"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return None, "fr_lane_template_unreadable:{}".format(error)
+    result = payload.get("result") if isinstance(payload, dict) else None
+    template = result.get("template") if isinstance(result, dict) else None
+    if payload.get("verdict") != "FR_LANE_TEMPLATE_CAPTURED" or not isinstance(template, dict):
+        return None, "fr_lane_template_invalid_verdict"
+    try:
+        lane = FrLaneTemplate(
+            tag_id=int(template["tag_id"]),
+            desired_ball_range_m=float(template["desired_ball_range_m"]),
+            range_tolerance_m=float(template["range_tolerance_m"]),
+            desired_ball_bearing_rad=float(template["desired_ball_bearing_rad"]),
+            desired_target_bearing_rad=float(template["desired_target_bearing_rad"]),
+            ball_bearing_tolerance_rad=float(template["ball_bearing_tolerance_rad"]),
+            target_bearing_tolerance_rad=float(template["target_bearing_tolerance_rad"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None, "fr_lane_template_missing_fields"
+    numbers = tuple(asdict(lane).values())[1:]
+    if lane.tag_id != tag_id or not all(math.isfinite(float(value)) for value in numbers):
+        return None, "fr_lane_template_tag_or_number_invalid"
+    if not 0.30 <= lane.desired_ball_range_m <= 2.0 or not 0.0 < lane.range_tolerance_m <= 0.25:
+        return None, "fr_lane_template_range_invalid"
+    if not 0.0 < lane.ball_bearing_tolerance_rad <= 0.20 or not 0.0 < lane.target_bearing_tolerance_rad <= 0.20:
+        return None, "fr_lane_template_bearing_tolerance_invalid"
+    return lane, "fr_lane_template_pass"
+
+
+def action_for(perception: Perception, args: argparse.Namespace, lane: FrLaneTemplate) -> tuple[str, float, float, float]:
+    """FR template에 대해 yaw/forward만 제한적으로 보정한다.
+
+    ball bearing을 0으로 맞추지 않는다. FR의 lateral offset 때문에 valid kick lane의 ball은
+    camera image 중앙에서 벗어날 수 있다. 두 bearing error의 부호가 반대면 yaw만으로는
+    해소할 수 없으므로 lateral/base calibration 전에는 이동을 금지한다.
+    """
+    ball_error = angle_distance(perception.ball_bearing_rad, lane.desired_ball_bearing_rad)
+    target_error = angle_distance(perception.target_bearing_rad, lane.desired_target_bearing_rad)
+    ball_aligned = abs(ball_error) <= lane.ball_bearing_tolerance_rad
+    target_aligned = abs(target_error) <= lane.target_bearing_tolerance_rad
+    if not ball_aligned or not target_aligned:
+        if not ball_aligned and not target_aligned and ball_error * target_error < 0.0:
+            return "fr_lane_lateral_alignment_required", 0.0, 0.0, 0.0
+        correction = (
+            ball_error if not target_aligned else target_error if not ball_aligned
+            else 0.5 * (ball_error + target_error)
+        )
         # Upstream example convention: +rx left turn, -rx right turn.
-        return "turn_to_target", 0.0, 0.0, -math.copysign(args.joystick_magnitude, perception.target_bearing_rad)
-    if abs(perception.ball_bearing_rad) > args.ball_bearing_tolerance_rad:
-        return "turn_to_ball", 0.0, 0.0, -math.copysign(args.joystick_magnitude, perception.ball_bearing_rad)
-    if perception.ball_range_m <= args.stage_range_max_m:
+        return "turn_to_fr_lane", 0.0, 0.0, -math.copysign(args.joystick_magnitude, correction)
+    if perception.ball_range_m < lane.desired_ball_range_m - lane.range_tolerance_m:
+        return "ball_too_close_no_reverse", 0.0, 0.0, 0.0
+    if perception.ball_range_m <= lane.desired_ball_range_m + lane.range_tolerance_m:
         return "camera_staging_ready", 0.0, 0.0, 0.0
     return "forward", 0.0, args.joystick_magnitude, 0.0
 
@@ -319,6 +379,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         if not evidence_ok:
             return {"connected": False, "execute": True, "motion_commands_sent": False, "verdict": "REMOTE_EVIDENCE_REJECTED", "reason": evidence_reason}
 
+    lane_template, template_reason = load_fr_lane_template(args.fr_lane_template, args.tag_id)
+    if args.execute and lane_template is None:
+        return {
+            "connected": False, "execute": True, "motion_commands_sent": False,
+            "verdict": "FR_LANE_TEMPLATE_REJECTED", "reason": template_reason,
+        }
+
     connection = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=args.robot_ip)
     sport_states: list[dict[str, Any]] = []
     odom_poses: list[dict[str, float]] = []
@@ -357,7 +424,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "execute": args.execute,
             "motion_commands_sent": False,
             "preflight": {
-                "ok": state_ok and odom_ok and perception is not None and not remote_latch.tripped(),
+                "ok": state_ok and odom_ok and perception is not None and lane_template is not None and not remote_latch.tripped(),
                 "mcf_state_reason": state_reason,
                 "sport_state": initial_state,
                 "odom_baseline": baseline,
@@ -365,6 +432,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "odom_static_span_threshold_m": args.max_static_baseline_span_m,
                 "perception_reason": perception_reason,
                 "perception": None if perception is None else asdict(perception),
+                "fr_lane_template_reason": template_reason,
+                "fr_lane_template": None if lane_template is None else asdict(lane_template),
                 "remote_events_before_command": remote_latch.events,
             },
             "command_contract": {
@@ -381,12 +450,15 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             },
             "cycles": [],
         }
+        if lane_template is None:
+            result["verdict"] = "FR_LANE_TEMPLATE_REQUIRED" if args.fr_lane_template is None else "FR_LANE_TEMPLATE_REJECTED"
+            return result
         if not result["preflight"]["ok"]:
             result["verdict"] = "PREFLIGHT_REJECTED"
             return result
 
-        assert perception is not None and baseline is not None
-        first_action = action_for(perception, args)
+        assert perception is not None and baseline is not None and lane_template is not None
+        first_action = action_for(perception, args, lane_template)
         if not args.execute:
             result["dry_run_next_action"] = {"reason": first_action[0], "joystick": list(first_action[1:])}
             result["verdict"] = "DRY_RUN_READY"
@@ -408,7 +480,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if travel_m >= args.max_travel_m:
                 result["verdict"] = "TRAVEL_LIMIT_REACHED"
                 break
-            reason, lx, ly, rx = action_for(perception, args)
+            reason, lx, ly, rx = action_for(perception, args, lane_template)
             cycle: dict[str, Any] = {
                 "index": cycle_index,
                 "perception": asdict(perception),
@@ -421,8 +493,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if reason == "camera_staging_ready":
                 result["verdict"] = "CAMERA_STAGING_READY"
                 break
-            if reason == "ball_too_close":
-                result["verdict"] = "BALL_TOO_CLOSE_NO_REVERSE"
+            if reason in ("ball_too_close_no_reverse", "fr_lane_lateral_alignment_required"):
+                result["verdict"] = reason.upper()
                 break
             duration_s = args.forward_pulse_s if reason == "forward" else args.turn_pulse_s
             sent, neutral, pulse_result = await joystick_pulse(
@@ -460,6 +532,10 @@ def main() -> int:
     parser.add_argument("--robot-ip", required=True, help="Go2 MCU WebRTC IP (현재 실물: 192.168.123.161)")
     parser.add_argument("--perception-url", default="http://127.0.0.1:8080/state.json")
     parser.add_argument("--tag-id", type=int, required=True)
+    parser.add_argument(
+        "--fr-lane-template", type=Path, default=None,
+        help="capture_d435i_fr_lane_template.py가 만든 camera-visible FR lane template JSON",
+    )
     parser.add_argument("--execute", action="store_true", help="없으면 read-only dry-run plan만 만든다")
     parser.add_argument("--operator-confirm", default="")
     parser.add_argument("--remote-preempt-evidence", type=Path, default=None)
@@ -490,6 +566,8 @@ def main() -> int:
         parser.error("--execute에는 --operator-confirm {}가 정확히 필요합니다".format(CONFIRMATION))
     if args.execute and args.remote_preempt_evidence is None:
         parser.error("--execute에는 read-only --remote-preempt-evidence JSON이 필요합니다")
+    if args.execute and args.fr_lane_template is None:
+        parser.error("--execute에는 --fr-lane-template JSON이 필요합니다")
     if not 0.0 < args.joystick_magnitude <= 0.20:
         parser.error("joystick magnitude는 0보다 크고 0.20 이하여야 합니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
