@@ -196,6 +196,14 @@ ownership/자세 복구는 operator가 해야 한다.
 각 pulse는 LiDAR odometry가 계산한 목표 거리(기본 최대 0.12m)에 도달하는 즉시 중간에
 neutralize한다. duration을 길게 만든 것이 open-loop 이동거리 증가를 뜻하지 않는다.
 
+추가 실물 로그에서 0.03m 목표를 robot_odom의 gait/body transient 한 샘플이 먼저 넘겨
+전진·회전이 실제 step 전에 끊기는 현상을 확인했다. 이제 odometry stop은 active command를
+최소 0.60초 유지한 뒤 서로 다른 새 sample 3개가 연속으로 목표를 확인해야 작동한다.
+yaw/lateral pulse 상한은 gait initiation 여유를 위해 0.80초다. camera-visible 목표까지
+0.04m 이내인 작은 잔여 거리는 짧은 pulse를 반복하지 않고, 정렬을 다시 gate한 뒤 기존
+LiDAR-odometry bounded final dock으로 넘긴다. joystick magnitude 0.20과 전체 travel/duration
+hard limit은 그대로다.
+
 통합 runner는 camera staging 뒤 `--camera-to-fr-forward-m`과
 `--fr-to-ball-forward-m`의 실측 signed-forward 합을 최종 camera-ground→ball-center 목표로
 사용한다. D435i floor plane의 ball→Tag 축에 현재 ball ground 위치를 투영하고 그 차이만
