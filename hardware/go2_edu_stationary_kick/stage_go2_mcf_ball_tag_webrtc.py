@@ -52,6 +52,7 @@ REOBSERVE_SETTLE_S = 0.50
 MAX_STATIC_BASELINE_SPAN_M = 0.04
 MAX_ODOM_STALE_S = 0.50
 MAX_PERCEPTION_AGE_S = 0.35
+OBSERVATION_TIMEOUT_S = 2.0
 MIN_BALL_CONFIDENCE = 0.015
 STAGE_RANGE_MIN_M = 0.65
 STAGE_RANGE_MAX_M = 0.85
@@ -160,20 +161,33 @@ def fetch_perception(url: str, tag_id: int, timeout_s: float) -> Perception | No
 
 
 async def stable_perception(args: argparse.Namespace) -> tuple[Perception | None, str]:
+    """짧은 detector frame drop은 bounded retry하고 stale/unstable state는 계속 거부한다."""
     samples: list[Perception] = []
-    for index in range(args.observation_count):
+    deadline = time.monotonic() + args.observation_timeout_s
+    latest_reason = "perception_missing"
+    while len(samples) < args.observation_count and time.monotonic() < deadline:
         sample = fetch_perception(args.perception_url, args.tag_id, args.http_timeout_s)
         if sample is None:
-            return None, "perception_missing"
-        if sample.age_s > args.perception_max_age_s:
-            return None, "perception_stale"
-        if sample.ball_confidence < args.min_ball_confidence:
-            return None, "ball_confidence_low"
-        if not 0.30 <= sample.ball_range_m <= 3.0:
-            return None, "ball_depth_out_of_range"
-        samples.append(sample)
-        if index + 1 < args.observation_count:
+            latest_reason = "perception_missing"
             await asyncio.sleep(args.observation_interval_s)
+            continue
+        if sample.age_s > args.perception_max_age_s:
+            latest_reason = "perception_stale"
+            await asyncio.sleep(args.observation_interval_s)
+            continue
+        if sample.ball_confidence < args.min_ball_confidence:
+            latest_reason = "ball_confidence_low"
+            await asyncio.sleep(args.observation_interval_s)
+            continue
+        if not 0.30 <= sample.ball_range_m <= 3.0:
+            latest_reason = "ball_depth_out_of_range"
+            await asyncio.sleep(args.observation_interval_s)
+            continue
+        samples.append(sample)
+        if len(samples) < args.observation_count:
+            await asyncio.sleep(args.observation_interval_s)
+    if len(samples) < args.observation_count:
+        return None, latest_reason
     anchor = samples[-1]
     if max(abs(sample.ball_range_m - anchor.ball_range_m) for sample in samples) > args.max_range_jitter_m:
         return None, "ball_range_unstable"
@@ -348,26 +362,43 @@ def load_fr_lane_template(path: Path | None, tag_id: int) -> tuple[FrLaneTemplat
 def action_for(
     perception: Perception, args: argparse.Namespace, lane: FrLaneTemplate, lateral_sign: float,
 ) -> tuple[str, float, float, float]:
-    """Tag yaw를 먼저 맞춘 뒤 ball bearing을 bounded lateral probe로 보정한다.
+    """FR lane 방향 yaw를 먼저 맞춘 뒤 lateral probe로 FR→ball lane을 보정한다.
 
     ball bearing을 0으로 맞추지 않는다. FR의 lateral offset 때문에 valid kick lane의 ball은
-    camera image 중앙에서 벗어날 수 있다. Tag ground-ray는 robot yaw로만 우선 정렬한다.
-    yaw 정렬 뒤 남은 ball bearing은 작은 ``lx`` pulse로 한 방향을 시험하고, 다음 D435i
-    observation에서 실제 improvement가 없으면 반대 방향을 시험한다. 즉 joystick lateral
-    부호를 가정해 연속 이동하지 않는다.
+    camera image 중앙에서 벗어날 수 있다. 먼저 Tag ground ray를 template 값에 맞춰 body/FR
+    방향을 kick lane과 평행하게 만든다. robot yaw는 ball/Tag bearing을 거의 함께 변화시키므로
+    그 다음 남는 ``ball - Tag`` 상대 bearing 오차는 작은 ``lx`` pulse로 시험해야 한다.
+    lateral 뒤 Tag ray는 다시 달라질 수 있으므로 다음 cycle에서 yaw를 재확인한다. joystick
+    lateral 부호는 관측으로만 정하고 연속 이동으로 가정하지 않는다.
     """
-    ball_error = angle_distance(perception.ball_bearing_rad, lane.desired_ball_bearing_rad)
-    target_error = angle_distance(perception.target_bearing_rad, lane.desired_target_bearing_rad)
+    errors = fr_lane_bearing_errors(perception, lane)
+    target_error = errors["target_error_rad"]
     if abs(target_error) > lane.target_bearing_tolerance_rad:
         # Upstream example convention: +rx left turn, -rx right turn.
         return "turn_to_tag_ray", 0.0, 0.0, -math.copysign(args.joystick_magnitude, target_error)
-    if abs(ball_error) > lane.ball_bearing_tolerance_rad:
+    # yaw 뒤에도 남는 ball-vs-Tag 상대 bearing은 FR toe가 공 중심 뒤 선상에 없다는 뜻이다.
+    if abs(errors["relative_error_rad"]) > min(
+        lane.ball_bearing_tolerance_rad, lane.target_bearing_tolerance_rad,
+    ):
         return "lateral_to_fr_lane", math.copysign(args.joystick_magnitude, lateral_sign), 0.0, 0.0
     if perception.ball_range_m < lane.desired_ball_range_m - lane.range_tolerance_m:
         return "ball_too_close_no_reverse", 0.0, 0.0, 0.0
     if perception.ball_range_m <= lane.desired_ball_range_m + lane.range_tolerance_m:
         return "camera_staging_ready", 0.0, 0.0, 0.0
     return "forward", 0.0, args.joystick_magnitude, 0.0
+
+
+def fr_lane_bearing_errors(perception: Perception, lane: FrLaneTemplate) -> dict[str, float]:
+    """camera frame에서 FR toe→ball→Tag ray의 상대/절대 bearing 오차를 기록한다."""
+    observed_relative = angle_distance(perception.ball_bearing_rad, perception.target_bearing_rad)
+    desired_relative = angle_distance(lane.desired_ball_bearing_rad, lane.desired_target_bearing_rad)
+    return {
+        "ball_error_rad": angle_distance(perception.ball_bearing_rad, lane.desired_ball_bearing_rad),
+        "target_error_rad": angle_distance(perception.target_bearing_rad, lane.desired_target_bearing_rad),
+        "observed_relative_bearing_rad": observed_relative,
+        "desired_relative_bearing_rad": desired_relative,
+        "relative_error_rad": angle_distance(observed_relative, desired_relative),
+    }
 
 
 def publish_joystick(pub_sub: Any, topic: str, *, lx: float = 0.0, ly: float = 0.0, rx: float = 0.0) -> None:
@@ -537,6 +568,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "odom_static_span_threshold_m": args.max_static_baseline_span_m,
                 "perception_reason": perception_reason,
                 "perception": None if perception is None else asdict(perception),
+                "fr_lane_bearing_errors": (
+                    None if perception is None or lane_template is None
+                    else fr_lane_bearing_errors(perception, lane_template)
+                ),
                 "fr_lane_template_reason": template_reason,
                 "fr_lane_template": None if lane_template is None else asdict(lane_template),
                 "direct_remote_watchdog_reason": watchdog_reason,
@@ -551,10 +586,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "same_value_physical_input_during_echo_window_unobservable": True,
                 "joystick_magnitude": args.joystick_magnitude,
                 "rate_hz": COMMAND_RATE_HZ,
+                "observation_timeout_s": args.observation_timeout_s,
                 "forward_pulse_s": args.forward_pulse_s,
                 "turn_pulse_s": args.turn_pulse_s,
                 "lateral_pulse_s": args.lateral_pulse_s,
                 "lateral_search_opt_in": args.allow_lateral_search,
+                "initial_lateral_sign": args.lateral_sign,
+                "lateral_sign_preconfirmed": args.lateral_sign_confirmed,
+                "lateral_probe_only": args.lateral_probe_only,
                 "lateral_min_improvement_rad": args.lateral_min_improvement_rad,
                 "max_lateral_probe_attempts": args.max_lateral_probe_attempts,
                 "neutral_packets_after_each_pulse": NEUTRAL_PACKET_COUNT,
@@ -575,14 +614,18 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         assert perception is not None and baseline is not None and lane_template is not None
         # lateral joystick의 + 부호가 camera ball-bearing을 어느 방향으로 바꾸는지는
         # mount/firmware 환경마다 확정할 수 없다. 첫 짧은 probe만 관측해 sign을 정한다.
-        lateral_sign = 1.0
-        lateral_sign_confirmed = False
+        lateral_sign = args.lateral_sign
+        lateral_sign_confirmed = args.lateral_sign_confirmed
         lateral_probe_attempts = 0
-        pending_lateral_probe: dict[str, float] | None = None
+        pending_lateral_probe: dict[str, Any] | None = None
         result["lateral_probe_results"] = []
         first_action = action_for(perception, args, lane_template, lateral_sign)
         if not args.execute:
-            result["dry_run_next_action"] = {"reason": first_action[0], "joystick": list(first_action[1:])}
+            result["dry_run_next_action"] = {
+                "reason": first_action[0],
+                "joystick": list(first_action[1:]),
+                "fr_lane_bearing_errors": fr_lane_bearing_errors(perception, lane_template),
+            }
             result["verdict"] = "DRY_RUN_READY"
             return result
 
@@ -605,13 +648,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 result["verdict"] = "PERCEPTION_REJECTED_{}".format(perception_reason.upper())
                 break
             if pending_lateral_probe is not None:
-                after_abs_error = abs(angle_distance(
-                    perception.ball_bearing_rad, lane_template.desired_ball_bearing_rad,
-                ))
-                improvement = pending_lateral_probe["before_abs_error_rad"] - after_abs_error
+                after_errors = fr_lane_bearing_errors(perception, lane_template)
+                after_abs_error = abs(after_errors["relative_error_rad"])
+                improvement = pending_lateral_probe["before_abs_relative_error_rad"] - after_abs_error
                 probe_result = {
                     **pending_lateral_probe,
-                    "after_abs_error_rad": after_abs_error,
+                    "after_abs_relative_error_rad": after_abs_error,
+                    "after_fr_lane_bearing_errors": after_errors,
                     "improvement_rad": improvement,
                 }
                 if improvement >= args.lateral_min_improvement_rad:
@@ -627,8 +670,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     # 반대 sign도 한 번만 관측한다. sign을 추정으로 고정하지 않는다.
                     lateral_sign = -pending_lateral_probe["sign"]
                     probe_result["verdict"] = "flip_sign_and_retry"
+                probe_result["recommended_lateral_sign"] = lateral_sign
                 result["lateral_probe_results"].append(probe_result)
                 pending_lateral_probe = None
+                if args.lateral_probe_only:
+                    result["recommended_lateral_sign"] = lateral_sign
+                    result["lateral_sign_confirmed"] = lateral_sign_confirmed
+                    result["verdict"] = "LATERAL_PROBE_MEASURED"
+                    break
             if latest_pose is None or time.monotonic() - connected_at - latest_pose["elapsed_s"] > args.max_odom_stale_s:
                 result["verdict"] = "ODOM_STALE"
                 break
@@ -640,6 +689,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             cycle: dict[str, Any] = {
                 "index": cycle_index,
                 "perception": asdict(perception),
+                "fr_lane_bearing_errors": fr_lane_bearing_errors(perception, lane_template),
                 "start_odom": latest_pose,
                 "travel_m": travel_m,
                 "reason": reason,
@@ -669,9 +719,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 pending_lateral_probe = {
                     "attempt": float(lateral_probe_attempts),
                     "sign": math.copysign(1.0, lx),
-                    "before_abs_error_rad": abs(angle_distance(
-                        perception.ball_bearing_rad, lane_template.desired_ball_bearing_rad,
-                    )),
+                    "before_abs_relative_error_rad": abs(
+                        fr_lane_bearing_errors(perception, lane_template)["relative_error_rad"],
+                    ),
+                    "before_fr_lane_bearing_errors": fr_lane_bearing_errors(perception, lane_template),
                 }
             duration_s = (
                 args.forward_pulse_s if reason == "forward"
@@ -742,6 +793,7 @@ def main() -> int:
     parser.add_argument("--min-ball-confidence", type=float, default=MIN_BALL_CONFIDENCE)
     parser.add_argument("--observation-count", type=int, default=3)
     parser.add_argument("--observation-interval-s", type=float, default=0.10)
+    parser.add_argument("--observation-timeout-s", type=float, default=OBSERVATION_TIMEOUT_S)
     parser.add_argument("--max-range-jitter-m", type=float, default=0.08)
     parser.add_argument("--max-bearing-jitter-rad", type=float, default=0.10)
     parser.add_argument("--stage-range-min-m", type=float, default=STAGE_RANGE_MIN_M)
@@ -753,7 +805,19 @@ def main() -> int:
     parser.add_argument("--turn-pulse-s", type=float, default=TURN_PULSE_S)
     parser.add_argument(
         "--allow-lateral-search", action="store_true",
-        help="FR lane ball-bearing 보정용 bounded lateral probe를 명시적으로 arm한다",
+        help="FR toe→ball→Tag 상대 bearing 보정용 bounded lateral probe를 명시적으로 arm한다",
+    )
+    parser.add_argument(
+        "--lateral-sign", type=float, choices=(-1.0, 1.0), default=1.0,
+        help="첫 lateral probe의 lx 부호. probe 결과가 sign_confirmed일 때만 다음 실행에 재사용한다",
+    )
+    parser.add_argument(
+        "--lateral-sign-confirmed", action="store_true",
+        help="직전 LATERAL_PROBE_MEASURED 결과의 recommended_lateral_sign을 명시적으로 확인했음을 뜻한다",
+    )
+    parser.add_argument(
+        "--lateral-probe-only", action="store_true",
+        help="lateral pulse 1회와 재관측 1회만 수행한 뒤 추가 보행 없이 neutral로 끝낸다",
     )
     parser.add_argument("--lateral-pulse-s", type=float, default=LATERAL_PULSE_S)
     parser.add_argument("--lateral-min-improvement-rad", type=float, default=LATERAL_MIN_IMPROVEMENT_RAD)
@@ -771,6 +835,10 @@ def main() -> int:
         parser.error("--execute에는 fresh --direct-remote-status JSON이 필요합니다")
     if args.execute and args.fr_lane_template is None:
         parser.error("--execute에는 --fr-lane-template JSON이 필요합니다")
+    if (args.lateral_sign_confirmed or args.lateral_probe_only) and not args.allow_lateral_search:
+        parser.error("--lateral-sign-confirmed/--lateral-probe-only에는 --allow-lateral-search가 필요합니다")
+    if args.lateral_sign_confirmed and args.lateral_probe_only:
+        parser.error("--lateral-sign-confirmed와 --lateral-probe-only는 함께 사용할 수 없습니다")
     if not 0.0 < args.joystick_magnitude <= 0.20:
         parser.error("joystick magnitude는 0보다 크고 0.20 이하여야 합니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
@@ -779,6 +847,7 @@ def main() -> int:
         parser.error("observation-count는 3 이상이고 max-cycles/max-lateral-probe-attempts는 1 이상이어야 합니다")
     if min(
         args.forward_pulse_s, args.turn_pulse_s, args.lateral_pulse_s, args.lateral_min_improvement_rad,
+        args.observation_interval_s, args.observation_timeout_s,
         args.reobserve_settle_s, args.max_travel_m,
         args.max_odom_stale_s, args.direct_remote_max_age_s, args.direct_remote_hold_s,
     ) <= 0.0 or not 1 <= args.direct_remote_udp_port <= 65535:
@@ -808,7 +877,9 @@ def main() -> int:
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print("MCF_D435I_BALL_TAG_STAGE_{} output={}".format(payload["verdict"], output))
     print(json.dumps(payload, ensure_ascii=False))
-    return 0 if payload["verdict"] in {"DRY_RUN_READY", "CAMERA_STAGING_READY"} else 2
+    return 0 if payload["verdict"] in {
+        "DRY_RUN_READY", "CAMERA_STAGING_READY", "LATERAL_PROBE_MEASURED",
+    } else 2
 
 
 if __name__ == "__main__":
