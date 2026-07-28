@@ -343,6 +343,7 @@ class DirectRemoteWatchdog:
     event_count: int
     last_active_monotonic_s: float | None
     last_event: dict[str, Any] | None
+    virtual_echo_protocol_version: int
 
 
 class DirectRemoteLatch(asyncio.DatagramProtocol):
@@ -364,7 +365,8 @@ class DirectRemoteLatch(asyncio.DatagramProtocol):
 
 
 def load_direct_remote_watchdog(
-    path: Path | None, *, max_age_s: float, hold_s: float
+    path: Path | None, *, max_age_s: float, hold_s: float,
+    virtual_echo_window: Path | None = None,
 ) -> tuple[DirectRemoteWatchdog | None, str]:
     """direct DDS watchdog heartbeat와 actual physical-input proof를 fail-closed로 확인한다."""
     if path is None:
@@ -380,10 +382,15 @@ def load_direct_remote_watchdog(
         event_count = int(payload["physical_input_event_count"])
         last_active_value = payload.get("last_active_monotonic_s")
         last_active = None if last_active_value is None else float(last_active_value)
+        echo_protocol = int(payload["virtual_echo_protocol_version"])
     except (KeyError, TypeError, ValueError):
         return None, "direct_remote_watchdog_missing_fields"
     if payload.get("ready") is not True or payload.get("motion_commands_sent") is not False:
         return None, "direct_remote_watchdog_not_read_only_ready"
+    if echo_protocol != 1:
+        return None, "direct_remote_watchdog_echo_protocol_mismatch"
+    if virtual_echo_window is not None and payload.get("virtual_echo_window") != str(virtual_echo_window):
+        return None, "direct_remote_watchdog_echo_window_mismatch"
     now = time.monotonic()
     if not math.isfinite(heartbeat) or now - heartbeat > max_age_s:
         return None, "direct_remote_watchdog_stale"
@@ -392,7 +399,11 @@ def load_direct_remote_watchdog(
     if now - last_active < hold_s:
         return None, "physical_remote_active"
     last_event = payload.get("last_event")
-    return DirectRemoteWatchdog(heartbeat, event_count, last_active, last_event if isinstance(last_event, dict) else None), \
+    return DirectRemoteWatchdog(
+        heartbeat, event_count, last_active,
+        last_event if isinstance(last_event, dict) else None,
+        echo_protocol,
+    ), \
         "direct_remote_watchdog_pass"
 
 
@@ -442,11 +453,11 @@ def action_for(
     lateral 뒤 Tag ray는 다시 달라질 수 있으므로 다음 cycle에서 yaw를 재확인한다. joystick
     lateral 부호는 관측으로만 정하고 연속 이동으로 가정하지 않는다.
     """
-    errors = fr_lane_bearing_errors(perception, lane)
+    errors = fr_lane_bearing_errors(perception, lane, args.lane_axis_bearing_rad)
     # 0.20/0.50 s yaw pulse의 실물 해상도보다 작은 target 오차까지 매번 회전시키면
     # 공이 FOV 밖으로 나갈 수 있다. 이 값은 rough camera staging의 yaw deadband이며,
     # strict FR lane/kick 허용오차 자체를 완화하는 값은 아니다.
-    target_action_tolerance = max(
+    target_action_tolerance = min(
         lane.target_bearing_tolerance_rad, args.target_bearing_tolerance_rad,
     )
     target_error = errors["target_error_rad"]
@@ -465,16 +476,31 @@ def action_for(
     return "forward", 0.0, args.joystick_magnitude, 0.0
 
 
-def fr_lane_bearing_errors(perception: Perception, lane: FrLaneTemplate) -> dict[str, float]:
-    """camera frame에서 FR toe→ball→Tag ray의 상대/절대 bearing 오차를 기록한다."""
+def fr_lane_bearing_errors(
+    perception: Perception, lane: FrLaneTemplate,
+    lane_axis_bearing_rad: float | None = None,
+) -> dict[str, float]:
+    """camera frame에서 FR toe→ball→Tag ray의 상대/절대 bearing 오차를 기록한다.
+
+    ``lane_axis_bearing_rad``가 주어지면 template의 range/상대 bearing은 보존하되,
+    ball→Tag 지면축 자체는 그 camera bearing에 평행하게 맞춘다. head mount가 robot
+    전진축과 평행한 현재 실물에서는 0 rad가 body/FR과 kick lane의 평행 조건이다.
+    """
     observed_relative = angle_distance(perception.ball_bearing_rad, perception.target_bearing_rad)
     desired_relative = angle_distance(lane.desired_ball_bearing_rad, lane.desired_target_bearing_rad)
+    desired_target = (
+        lane.desired_target_bearing_rad
+        if lane_axis_bearing_rad is None else lane_axis_bearing_rad
+    )
+    desired_ball = angle_distance(desired_target + desired_relative, 0.0)
     return {
-        "ball_error_rad": angle_distance(perception.ball_bearing_rad, lane.desired_ball_bearing_rad),
-        "target_error_rad": angle_distance(perception.target_bearing_rad, lane.desired_target_bearing_rad),
+        "ball_error_rad": angle_distance(perception.ball_bearing_rad, desired_ball),
+        "target_error_rad": angle_distance(perception.target_bearing_rad, desired_target),
         "observed_relative_bearing_rad": observed_relative,
         "desired_relative_bearing_rad": desired_relative,
         "relative_error_rad": angle_distance(observed_relative, desired_relative),
+        "desired_lane_axis_bearing_rad": desired_target,
+        "desired_ball_bearing_rad": desired_ball,
     }
 
 
@@ -541,6 +567,7 @@ async def joystick_pulse(
     odom_poses: list[dict[str, float]] | None = None,
     start_pose: dict[str, float] | None = None,
     stop_after_forward_m: float | None = None,
+    stop_after_yaw_rad: float | None = None,
 ) -> tuple[int, int, str]:
     """partial burst도 neutralize한다. direct DDS remote input은 다음 packet 전에 stop한다."""
     packets = 0
@@ -552,7 +579,7 @@ async def joystick_pulse(
     )
     try:
         for _ in range(math.ceil(duration_s * COMMAND_RATE_HZ)):
-            if stop_after_forward_m is not None:
+            if stop_after_forward_m is not None or stop_after_yaw_rad is not None:
                 assert odom_poses is not None and start_pose is not None
                 if len(odom_poses) != last_pose_count:
                     last_pose_count = len(odom_poses)
@@ -560,13 +587,23 @@ async def joystick_pulse(
                 if time.monotonic() - last_odom_at > args.max_odom_stale_s:
                     termination = "odom_stale_during_pulse"
                     break
-                if odom_poses and forward_progress_m(start_pose, odom_poses[-1]) >= stop_after_forward_m:
+                if (
+                    stop_after_forward_m is not None
+                    and odom_poses
+                    and forward_progress_m(start_pose, odom_poses[-1]) >= stop_after_forward_m
+                ):
                     termination = "forward_odom_target_reached"
+                    break
+            if stop_after_yaw_rad is not None and odom_poses:
+                yaw_progress = abs(angle_distance(odom_poses[-1]["yaw_rad"], start_pose["yaw_rad"]))
+                if yaw_progress >= stop_after_yaw_rad:
+                    termination = "yaw_odom_target_reached"
                     break
             watchdog, watchdog_reason = load_direct_remote_watchdog(
                 args.direct_remote_status,
                 max_age_s=args.direct_remote_max_age_s,
                 hold_s=args.direct_remote_hold_s,
+                virtual_echo_window=args.virtual_echo_window,
             )
             if direct_latch.tripped() or watchdog_reason == "physical_remote_active":
                 termination = "physical_remote_preempted"
@@ -597,6 +634,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             args.direct_remote_status,
             max_age_s=args.direct_remote_max_age_s,
             hold_s=args.direct_remote_hold_s,
+            virtual_echo_window=args.virtual_echo_window,
         )
         if watchdog is None:
             return {
@@ -656,6 +694,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             args.direct_remote_status,
             max_age_s=args.direct_remote_max_age_s,
             hold_s=args.direct_remote_hold_s,
+            virtual_echo_window=args.virtual_echo_window,
         )
         direct_remote_ok = (not args.execute) or (watchdog is not None and not direct_latch.tripped())
         result: dict[str, Any] = {
@@ -674,7 +713,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "perception": None if perception is None else asdict(perception),
                 "fr_lane_bearing_errors": (
                     None if perception is None or lane_template is None
-                    else fr_lane_bearing_errors(perception, lane_template)
+                    else fr_lane_bearing_errors(perception, lane_template, args.lane_axis_bearing_rad)
                 ),
                 "fr_lane_template_reason": template_reason,
                 "fr_lane_template": None if lane_template is None else asdict(lane_template),
@@ -691,6 +730,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "joystick_magnitude": args.joystick_magnitude,
                 "rate_hz": COMMAND_RATE_HZ,
                 "observation_timeout_s": args.observation_timeout_s,
+                "lane_axis_bearing_rad": args.lane_axis_bearing_rad,
+                "target_bearing_tolerance_rad": args.target_bearing_tolerance_rad,
                 "forward_pulse_s": args.forward_pulse_s,
                 "max_forward_pulse_travel_m": args.max_forward_pulse_travel_m,
                 "final_dock_enabled": args.enable_final_dock,
@@ -734,7 +775,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             result["dry_run_next_action"] = {
                 "reason": first_action[0],
                 "joystick": list(first_action[1:]),
-                "fr_lane_bearing_errors": fr_lane_bearing_errors(perception, lane_template),
+                "fr_lane_bearing_errors": fr_lane_bearing_errors(
+                    perception, lane_template, args.lane_axis_bearing_rad,
+                ),
             }
             if args.enable_final_dock:
                 result["dry_run_final_dock_plan"] = final_dock_plan(perception, args)
@@ -746,6 +789,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 args.direct_remote_status,
                 max_age_s=args.direct_remote_max_age_s,
                 hold_s=args.direct_remote_hold_s,
+                virtual_echo_window=args.virtual_echo_window,
             )
             if direct_latch.tripped() or watchdog_reason == "physical_remote_active":
                 result["verdict"] = "PHYSICAL_REMOTE_PREEMPTED"
@@ -760,7 +804,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 result["verdict"] = "PERCEPTION_REJECTED_{}".format(perception_reason.upper())
                 break
             if pending_lateral_probe is not None:
-                after_errors = fr_lane_bearing_errors(perception, lane_template)
+                after_errors = fr_lane_bearing_errors(
+                    perception, lane_template, args.lane_axis_bearing_rad,
+                )
                 after_abs_error = abs(after_errors["relative_error_rad"])
                 improvement = pending_lateral_probe["before_abs_relative_error_rad"] - after_abs_error
                 probe_result = {
@@ -801,7 +847,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             cycle: dict[str, Any] = {
                 "index": cycle_index,
                 "perception": asdict(perception),
-                "fr_lane_bearing_errors": fr_lane_bearing_errors(perception, lane_template),
+                "fr_lane_bearing_errors": fr_lane_bearing_errors(
+                    perception, lane_template, args.lane_axis_bearing_rad,
+                ),
                 "start_odom": latest_pose,
                 "travel_m": travel_m,
                 "reason": reason,
@@ -809,7 +857,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             }
             result["cycles"].append(cycle)
             if reason == "camera_staging_ready":
-                strict_errors = fr_lane_bearing_errors(perception, lane_template)
+                strict_errors = fr_lane_bearing_errors(
+                    perception, lane_template, args.lane_axis_bearing_rad,
+                )
                 strict_lane_ready = (
                     abs(strict_errors["ball_error_rad"]) <= lane_template.ball_bearing_tolerance_rad
                     and abs(strict_errors["target_error_rad"]) <= lane_template.target_bearing_tolerance_rad
@@ -907,9 +957,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "attempt": float(lateral_probe_attempts),
                     "sign": math.copysign(1.0, lx),
                     "before_abs_relative_error_rad": abs(
-                        fr_lane_bearing_errors(perception, lane_template)["relative_error_rad"],
+                        fr_lane_bearing_errors(
+                            perception, lane_template, args.lane_axis_bearing_rad,
+                        )["relative_error_rad"],
                     ),
-                    "before_fr_lane_bearing_errors": fr_lane_bearing_errors(perception, lane_template),
+                    "before_fr_lane_bearing_errors": fr_lane_bearing_errors(
+                        perception, lane_template, args.lane_axis_bearing_rad,
+                    ),
                 }
             duration_s = (
                 args.forward_pulse_s if reason == "forward"
@@ -917,6 +971,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 else args.lateral_pulse_s
             )
             stop_after_forward_m = None
+            stop_after_yaw_rad = None
             if reason == "forward":
                 remaining_to_stage_m = max(
                     0.0,
@@ -928,11 +983,18 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     max(0.03, remaining_to_stage_m),
                 )
                 cycle["forward_odom_target_m"] = stop_after_forward_m
+            elif reason == "turn_to_tag_ray":
+                stop_after_yaw_rad = min(
+                    abs(cycle["fr_lane_bearing_errors"]["target_error_rad"]),
+                    0.20,
+                )
+                cycle["yaw_odom_target_rad"] = stop_after_yaw_rad
             sent, neutral, pulse_result = await joystick_pulse(
                 pub_sub, RTC_TOPIC["WIRELESS_CONTROLLER"], lx=lx, ly=ly, rx=rx,
                 duration_s=duration_s, direct_latch=direct_latch, args=args,
                 odom_poses=odom_poses, start_pose=latest_pose,
                 stop_after_forward_m=stop_after_forward_m,
+                stop_after_yaw_rad=stop_after_yaw_rad,
             )
             command_packets += sent
             neutral_packets += neutral
@@ -1003,6 +1065,10 @@ def main() -> int:
     parser.add_argument("--max-bearing-jitter-rad", type=float, default=0.10)
     parser.add_argument("--stage-range-min-m", type=float, default=STAGE_RANGE_MIN_M)
     parser.add_argument("--stage-range-max-m", type=float, default=STAGE_RANGE_MAX_M)
+    parser.add_argument(
+        "--lane-axis-bearing-rad", type=float, default=None,
+        help="ball→Tag 지면축이 평행해야 할 camera bearing. 미지정 시 captured template 절대 bearing",
+    )
     parser.add_argument("--target-bearing-tolerance-rad", type=float, default=0.10)
     parser.add_argument("--ball-bearing-tolerance-rad", type=float, default=0.12)
     parser.add_argument("--joystick-magnitude", type=float, default=JOYSTICK_MAGNITUDE)
@@ -1079,6 +1145,13 @@ def main() -> int:
         parser.error("final-dock-max-duration-s는 [1.0, 5.0] 범위여야 합니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
         parser.error("stage range는 D435i valid range 안의 min < max여야 합니다")
+    if (
+        args.lane_axis_bearing_rad is not None
+        and (not math.isfinite(args.lane_axis_bearing_rad) or abs(args.lane_axis_bearing_rad) > 0.35)
+    ):
+        parser.error("--lane-axis-bearing-rad는 finite [-0.35, 0.35] 범위여야 합니다")
+    if not 0.01 <= args.target_bearing_tolerance_rad <= 0.20:
+        parser.error("--target-bearing-tolerance-rad는 [0.01, 0.20] 범위여야 합니다")
     if args.observation_count < 3 or args.max_cycles < 1 or args.max_lateral_probe_attempts < 1:
         parser.error("observation-count는 3 이상이고 max-cycles/max-lateral-probe-attempts는 1 이상이어야 합니다")
     if min(
