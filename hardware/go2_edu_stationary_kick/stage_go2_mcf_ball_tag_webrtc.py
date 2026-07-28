@@ -47,6 +47,14 @@ FORWARD_PULSE_S = 2.00
 MAX_FORWARD_PULSE_TRAVEL_M = 0.12
 FINAL_DOCK_MAX_M = 0.85
 FINAL_DOCK_MAX_DURATION_S = 5.0
+# 실물 로그에서 FR→ball 약 0.20m까지 gait를 유지하자 마지막 FR swing이 공을 먼저
+# 건드렸다. 1.2x FR kick이 남은 약 0.08m를 담당하도록 gait는 더 일찍 neutralize한다.
+FINAL_GAIT_TO_KICK_CLEARANCE_M = 0.08
+FINAL_SETTLE_TIMEOUT_S = 2.0
+FINAL_SETTLE_WINDOW_S = 0.40
+FINAL_SETTLE_MAX_PLANAR_SPEED_M_S = 0.08
+FINAL_SETTLE_MAX_YAW_SPEED_RAD_S = 0.12
+FINAL_SETTLE_MAX_ODOM_SPAN_M = 0.025
 # 0.50 s도 이 실물에서 gait initiation 경계라 몸만 움찔하고 끝나는 실행이 있었다.
 # magnitude는 그대로 두고 yaw/lateral pulse 상한을 0.80 s로 둔다. odometry 목표를
 # 연속 확인하면 상한 전에 neutralize하므로 0.80 s open-loop 회전을 강제하지 않는다.
@@ -75,6 +83,8 @@ DIRECT_REMOTE_HOLD_S = 0.60
 DIRECT_REMOTE_UDP_PORT = 18181
 DEFAULT_VIRTUAL_ECHO_WINDOW = Path("hardware_measurements/go2_stage_virtual_joystick_echo_window.json")
 VIRTUAL_ECHO_GRACE_S = 0.15
+VIRTUAL_ECHO_REFRESH_S = 0.20
+VIRTUAL_ECHO_LEASE_S = 0.50
 LATERAL_MIN_IMPROVEMENT_RAD = 0.01
 MAX_LATERAL_PROBE_ATTEMPTS = 3
 CONFIRMATION = "MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY"
@@ -280,6 +290,7 @@ def sport_state_summary(message: Any, elapsed_s: float) -> dict[str, Any]:
         "progress": data.get("progress"),
         "body_height": data.get("body_height"),
         "velocity": velocity,
+        "yaw_speed": data.get("yaw_speed"),
     }
 
 
@@ -512,14 +523,88 @@ def fr_lane_bearing_errors(
 
 
 def final_dock_plan(perception: Perception, args: argparse.Namespace) -> dict[str, float]:
-    """ball→Tag ground 축의 forward에서 signed camera→FR→ball 목표를 뺀다."""
-    desired_forward = args.camera_to_fr_forward_m + args.fr_to_ball_forward_m
+    """gait 접촉 여유를 남긴 camera→FR→ball 최종 보행 목표를 계산한다."""
+    desired_forward = (
+        args.camera_to_fr_forward_m
+        + args.fr_to_ball_forward_m
+        + args.final_gait_to_kick_clearance_m
+    )
     return {
         "observed_ball_ground_range_m": perception.ball_ground_range_m,
         "observed_ball_ground_forward_m": perception.ball_ground_forward_m,
         "desired_final_ball_ground_forward_m": desired_forward,
+        "desired_final_fr_to_ball_m": (
+            args.fr_to_ball_forward_m + args.final_gait_to_kick_clearance_m
+        ),
+        "gait_to_kick_clearance_m": args.final_gait_to_kick_clearance_m,
         "forward_m": max(0.0, perception.ball_ground_forward_m - desired_forward),
     }
+
+
+def motion_settle_snapshot(
+    sport_states: list[dict[str, Any]], odom_poses: list[dict[str, float]],
+    *, window_s: float, max_planar_speed_m_s: float,
+    max_yaw_speed_rad_s: float, max_odom_span_m: float,
+) -> dict[str, Any]:
+    """neutral 뒤 최근 state/odometry window가 실제 정지인지 fail-closed로 판정한다."""
+    if not sport_states or not odom_poses:
+        return {"ok": False, "reason": "settle_samples_missing"}
+    latest_elapsed = min(sport_states[-1]["elapsed_s"], odom_poses[-1]["elapsed_s"])
+    cutoff = latest_elapsed - window_s
+    recent_states = [state for state in sport_states if state["elapsed_s"] >= cutoff]
+    recent_poses = [pose for pose in odom_poses if pose["elapsed_s"] >= cutoff]
+    if len(recent_states) < 3 or len(recent_poses) < 3:
+        return {
+            "ok": False, "reason": "settle_window_incomplete",
+            "sport_sample_count": len(recent_states), "odom_sample_count": len(recent_poses),
+        }
+    velocities = [state.get("velocity") for state in recent_states]
+    yaw_speeds = [state.get("yaw_speed") for state in recent_states]
+    if any(not isinstance(value, list) or len(value) < 2 for value in velocities):
+        return {"ok": False, "reason": "settle_velocity_missing"}
+    try:
+        max_planar_speed = max(math.hypot(float(value[0]), float(value[1])) for value in velocities)
+        max_yaw_speed = max(abs(float(value)) for value in yaw_speeds)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "settle_velocity_invalid"}
+    anchor = recent_poses[-1]
+    odom_span = max(planar_distance(anchor, pose) for pose in recent_poses)
+    ok = (
+        max_planar_speed <= max_planar_speed_m_s
+        and max_yaw_speed <= max_yaw_speed_rad_s
+        and odom_span <= max_odom_span_m
+    )
+    return {
+        "ok": ok,
+        "reason": "motion_settled" if ok else "motion_still_active",
+        "window_s": window_s,
+        "sport_sample_count": len(recent_states),
+        "odom_sample_count": len(recent_poses),
+        "max_planar_speed_m_s": max_planar_speed,
+        "max_yaw_speed_rad_s": max_yaw_speed,
+        "odom_span_m": odom_span,
+    }
+
+
+async def wait_for_motion_settle(
+    sport_states: list[dict[str, Any]], odom_poses: list[dict[str, float]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + args.final_settle_timeout_s
+    snapshot: dict[str, Any] = {"ok": False, "reason": "settle_not_sampled"}
+    while time.monotonic() < deadline:
+        snapshot = motion_settle_snapshot(
+            sport_states, odom_poses,
+            window_s=args.final_settle_window_s,
+            max_planar_speed_m_s=args.final_settle_max_planar_speed_m_s,
+            max_yaw_speed_rad_s=args.final_settle_max_yaw_speed_rad_s,
+            max_odom_span_m=args.final_settle_max_odom_span_m,
+        )
+        if snapshot["ok"]:
+            return snapshot
+        await asyncio.sleep(0.05)
+    snapshot["timeout_s"] = args.final_settle_timeout_s
+    return snapshot
 
 
 def publish_joystick(pub_sub: Any, topic: str, *, lx: float = 0.0, ly: float = 0.0, rx: float = 0.0) -> None:
@@ -536,9 +621,9 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def arm_virtual_echo_window(path: Path, *, lx: float, ly: float, rx: float, duration_s: float) -> None:
     """direct DDS watcher가 자기 WebRTC packet echo를 physical input으로 오인하지 않게 한다.
 
-    Unitree SDK callback에는 DDS writer identity가 없다. 따라서 bounded pulse 직전의 exact
-    value/time window만 watcher와 공유한다. 값까지 같은 physical input은 구별할 수 없으므로
-    이 window는 packet duration + 짧은 transport grace보다 길게 유지하지 않는다.
+    Unitree SDK callback에는 DDS writer identity가 없다. 따라서 active pulse 동안 짧은
+    exact-value lease만 watcher와 공유하고 주기적으로 갱신한다. 값까지 같은 physical input은
+    구별할 수 없으므로 lease는 scheduling 지연을 덮는 범위보다 길게 유지하지 않는다.
     """
     now = time.monotonic()
     atomic_write_json(path, {
@@ -586,10 +671,20 @@ async def joystick_pulse(
     forward_confirmation_count = 0
     yaw_confirmation_count = 0
     arm_virtual_echo_window(
-        args.virtual_echo_window, lx=lx, ly=ly, rx=rx, duration_s=duration_s,
+        args.virtual_echo_window, lx=lx, ly=ly, rx=rx, duration_s=VIRTUAL_ECHO_LEASE_S,
     )
+    next_echo_refresh_at = pulse_started_at + VIRTUAL_ECHO_REFRESH_S
     try:
         for _ in range(math.ceil(duration_s * COMMAND_RATE_HZ)):
+            now = time.monotonic()
+            if now >= next_echo_refresh_at:
+                # 50 Hz loop scheduling이 nominal duration보다 늘어나도 active DDS echo가
+                # physical remote로 오인되지 않도록 짧은 exact-value lease만 갱신한다.
+                arm_virtual_echo_window(
+                    args.virtual_echo_window, lx=lx, ly=ly, rx=rx,
+                    duration_s=VIRTUAL_ECHO_LEASE_S,
+                )
+                next_echo_refresh_at = now + VIRTUAL_ECHO_REFRESH_S
             if stop_after_forward_m is not None or stop_after_yaw_rad is not None:
                 assert odom_poses is not None and start_pose is not None
                 if len(odom_poses) != last_pose_count:
@@ -761,6 +856,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "min_odom_stop_active_s": args.min_odom_stop_active_s,
                 "odom_stop_confirm_samples": args.odom_stop_confirm_samples,
                 "camera_stage_entry_slack_m": args.camera_stage_entry_slack_m,
+                "final_gait_to_kick_clearance_m": args.final_gait_to_kick_clearance_m,
+                "final_settle_timeout_s": args.final_settle_timeout_s,
+                "final_settle_window_s": args.final_settle_window_s,
+                "virtual_echo_lease_refresh_s": VIRTUAL_ECHO_REFRESH_S,
+                "virtual_echo_lease_s": VIRTUAL_ECHO_LEASE_S,
                 "observation_timeout_s": args.observation_timeout_s,
                 "lane_axis_bearing_rad": args.lane_axis_bearing_rad,
                 "target_bearing_tolerance_rad": args.target_bearing_tolerance_rad,
@@ -955,9 +1055,27 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         if pulse_result == "odom_stale_during_pulse":
                             result["verdict"] = "ODOM_STALE"
                             break
-                        if not dock_complete:
-                            result["verdict"] = "FINAL_DOCK_INCOMPLETE"
-                            break
+                    settle = await wait_for_motion_settle(sport_states, odom_poses, args)
+                    result["final_dock"]["motion_settle"] = settle
+                    if "start_odom" in result["final_dock"] and odom_poses:
+                        settled_pose = odom_poses[-1]
+                        settled_forward = forward_progress_m(
+                            result["final_dock"]["start_odom"], settled_pose,
+                        )
+                        dock_complete = settled_forward >= dock["forward_m"] - 0.02
+                        result["final_dock"].update({
+                            "final_odom": settled_pose,
+                            "measured_forward_m": settled_forward,
+                            "complete": dock_complete,
+                        })
+                    if not settle["ok"]:
+                        dock_complete = False
+                        result["final_dock"]["complete"] = False
+                        result["verdict"] = "FINAL_DOCK_NOT_SETTLED"
+                        break
+                    if not dock_complete:
+                        result["verdict"] = "FINAL_DOCK_INCOMPLETE"
+                        break
                 result["verdict"] = (
                     "FINAL_DOCKING_READY" if args.enable_final_dock and dock_complete
                     else "CAMERA_STAGING_READY"
@@ -1139,6 +1257,24 @@ def main() -> int:
     )
     parser.add_argument("--final-dock-max-m", type=float, default=FINAL_DOCK_MAX_M)
     parser.add_argument("--final-dock-max-duration-s", type=float, default=FINAL_DOCK_MAX_DURATION_S)
+    parser.add_argument(
+        "--final-gait-to-kick-clearance-m", type=float,
+        default=FINAL_GAIT_TO_KICK_CLEARANCE_M,
+        help="마지막 gait FR swing이 공에 닿지 않도록 kick 목표보다 먼저 멈출 추가 거리",
+    )
+    parser.add_argument("--final-settle-timeout-s", type=float, default=FINAL_SETTLE_TIMEOUT_S)
+    parser.add_argument("--final-settle-window-s", type=float, default=FINAL_SETTLE_WINDOW_S)
+    parser.add_argument(
+        "--final-settle-max-planar-speed-m-s", type=float,
+        default=FINAL_SETTLE_MAX_PLANAR_SPEED_M_S,
+    )
+    parser.add_argument(
+        "--final-settle-max-yaw-speed-rad-s", type=float,
+        default=FINAL_SETTLE_MAX_YAW_SPEED_RAD_S,
+    )
+    parser.add_argument(
+        "--final-settle-max-odom-span-m", type=float, default=FINAL_SETTLE_MAX_ODOM_SPAN_M,
+    )
     parser.add_argument("--turn-pulse-s", type=float, default=TURN_PULSE_S)
     parser.add_argument(
         "--allow-lateral-search", action="store_true",
@@ -1197,6 +1333,18 @@ def main() -> int:
         parser.error("final-dock-max-m은 [0.05, 0.85] 범위여야 합니다")
     if not 1.0 <= args.final_dock_max_duration_s <= FINAL_DOCK_MAX_DURATION_S:
         parser.error("final-dock-max-duration-s는 [1.0, 5.0] 범위여야 합니다")
+    if not 0.05 <= args.final_gait_to_kick_clearance_m <= 0.15:
+        parser.error("--final-gait-to-kick-clearance-m은 [0.05, 0.15] 범위여야 합니다")
+    if not 1.0 <= args.final_settle_timeout_s <= 3.0:
+        parser.error("--final-settle-timeout-s는 [1.0, 3.0] 범위여야 합니다")
+    if not 0.25 <= args.final_settle_window_s <= 1.0:
+        parser.error("--final-settle-window-s는 [0.25, 1.0] 범위여야 합니다")
+    if not (
+        0.02 <= args.final_settle_max_planar_speed_m_s <= 0.12
+        and 0.05 <= args.final_settle_max_yaw_speed_rad_s <= 0.20
+        and 0.005 <= args.final_settle_max_odom_span_m <= 0.04
+    ):
+        parser.error("final settle speed/yaw/odom threshold 범위가 유효하지 않습니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
         parser.error("stage range는 D435i valid range 안의 min < max여야 합니다")
     if (
