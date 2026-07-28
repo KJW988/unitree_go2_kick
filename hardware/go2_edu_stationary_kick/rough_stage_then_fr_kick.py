@@ -51,6 +51,13 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--observation-timeout-s", str(args.stage_observation_timeout_s),
         "--direct-remote-status", str(args.direct_remote_status),
         "--allow-lateral-search",
+        "--forward-pulse-s", str(args.stage_forward_pulse_s),
+        "--max-forward-pulse-travel-m", str(args.stage_max_forward_pulse_travel_m),
+        "--enable-final-dock",
+        "--camera-to-fr-forward-m", str(args.camera_to_fr_forward_m),
+        "--fr-to-ball-forward-m", str(args.fr_to_ball_forward_m),
+        "--final-dock-max-m", str(args.final_dock_max_m),
+        "--final-dock-max-duration-s", str(args.final_dock_max_duration_s),
         "--max-cycles", str(args.max_stage_cycles),
         "--max-travel-m", str(args.max_stage_travel_m),
         "--output", str(output),
@@ -92,6 +99,12 @@ def main() -> int:
     )
     parser.add_argument("--max-stage-cycles", type=int, default=5)
     parser.add_argument("--max-stage-travel-m", type=float, default=0.35)
+    parser.add_argument("--stage-forward-pulse-s", type=float, default=2.0)
+    parser.add_argument("--stage-max-forward-pulse-travel-m", type=float, default=0.12)
+    parser.add_argument("--camera-to-fr-forward-m", type=float, required=True)
+    parser.add_argument("--fr-to-ball-forward-m", type=float, required=True)
+    parser.add_argument("--final-dock-max-m", type=float, default=0.60)
+    parser.add_argument("--final-dock-max-duration-s", type=float, default=4.0)
     parser.add_argument("--interface", default="eth0")
     parser.add_argument("--lowcmd-python", type=Path, required=True)
     parser.add_argument("--trajectory", type=Path, required=True)
@@ -120,6 +133,19 @@ def main() -> int:
         parser.error("max-stage-cycles는 1 이상, max-stage-travel-m은 (0, 0.35]여야 합니다")
     if not 1.0 <= args.stage_observation_timeout_s <= 10.0:
         parser.error("--stage-observation-timeout-s는 [1.0, 10.0] 범위여야 합니다")
+    if not 0.50 <= args.stage_forward_pulse_s <= 2.0:
+        parser.error("--stage-forward-pulse-s는 [0.50, 2.0] 범위여야 합니다")
+    if not 0.03 <= args.stage_max_forward_pulse_travel_m <= 0.15:
+        parser.error("--stage-max-forward-pulse-travel-m은 [0.03, 0.15] 범위여야 합니다")
+    if not (
+        0.0 < args.camera_to_fr_forward_m <= 0.40
+        and 0.0 < args.fr_to_ball_forward_m <= 0.40
+    ):
+        parser.error("camera-to-FR/fr-to-ball forward 실측값은 (0, 0.40] 범위여야 합니다")
+    if not 0.05 <= args.final_dock_max_m <= 0.60:
+        parser.error("--final-dock-max-m은 [0.05, 0.60] 범위여야 합니다")
+    if not 1.0 <= args.final_dock_max_duration_s <= 4.0:
+        parser.error("--final-dock-max-duration-s는 [1.0, 4.0] 범위여야 합니다")
     if args.execute and (args.kick_hold_after_s is None or args.kick_hold_after_s <= 0.0):
         parser.error("--execute에는 양수 --kick-hold-after-s가 필요합니다")
     if not args.lowcmd_python.is_file() or not args.trajectory.is_file():
@@ -152,7 +178,7 @@ def main() -> int:
         if not args.execute:
             result["verdict"] = "DRY_RUN_STAGE_COMPLETE_NO_LOWCMD"
             return 0
-        if stage.get("verdict") != "CAMERA_STAGING_READY":
+        if stage.get("verdict") != "FINAL_DOCKING_READY":
             result["verdict"] = "STAGE_NOT_READY_NO_LOWCMD"
             return 2
         stage_result = stage.get("result")
