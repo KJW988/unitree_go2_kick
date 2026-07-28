@@ -322,12 +322,18 @@ python3 scripts/export_vendor_go2_fr_kick_teacher.py \
 ```
 
 
-## 공/Tag 정렬 staging 보행
+## MCF WebRTC bounded camera staging
 
-`approach_ball_to_tag.py`는 D435i stream의 `state.json`과 내장 LiDAR DDS odometry를
-함께 읽고 Go2 `ObstaclesAvoidClient.Move`로 **공/Tag가 아직 camera에 보이는 staging 위치까지만**
-접근한다. frozen FR LowCmd kick을 호출하거나 MotionSwitcher ownership을 바꾸지 않는다.
-physical remote의 stick/button 입력, odom/perception stale, 공/Tag loss, timeout은 모두 zero velocity로 즉시 중단한다. API command source와 obstacle avoidance 설정은 종료 시 원래 상태로 복구하며, remote input 뒤에는 process가 자동 재개하지 않는다.
+`approach_ball_to_tag.py`는 legacy `SportClient/ObstaclesAvoidClient.Move` 경로를 쓰며,
+이 Go2 MCF firmware에서는 API acknowledgement가 있어도 실제 보행이 일어나지 않았다.
+**실물에서 더 이상 실행하지 않는다.** frozen FR LowCmd kick과 MotionSwitcher ownership 변경도
+자동화하지 않는다.
+
+실물에서 gait가 확인된 경로는 WebRTC bridge의 App-equivalent
+`rt/wirelesscontroller`뿐이다. 새 `stage_go2_mcf_ball_tag_webrtc.py`는 D435i의 ball/Tag
+camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓰고, 0.20 joystick의 짧은 pulse마다
+neutral 3회와 재관측을 한다. 이 stage는 공/Tag가 camera에서 보이는 0.65–0.85m 준비 위치에서
+멈출 뿐, camera→base→FR extrinsic이 없는 현재 상태에서 final foot lane 또는 킥을 주장하지 않는다.
 
 먼저 D435 perception terminal에서 stream을 유지한다.
 
@@ -340,31 +346,38 @@ python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
   --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 --confidence 0.015
 ```
 
-다른 SDK terminal에서 먼저 dry-run command plan을 확인한다. 이 명령은
-`SportClient.Move`를 호출하지 않는다.
+다른 WebRTC MCF terminal에서 physical remote input을 같은 transport가 받는지 먼저
+read-only로 확인한다. `READY` 뒤 12초 안에 physical remote stick/button을 한 번 입력한다.
 
 ```bash
 cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
 source ~/miniconda3/etc/profile.d/conda.sh
-conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-unitree-sdk-py311
+conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-mcf-webrtc-py311
 unset PYTHONPATH
-python hardware/go2_edu_stationary_kick/approach_ball_to_tag.py --interface eth0 --tag-id 11
+python hardware/go2_edu_stationary_kick/probe_go2_mcf_webrtc_remote_preempt.py \
+  --robot-ip 192.168.123.161
 ```
 
-`STATE reason=advance`가 안정적으로 보인 뒤, harness/E-stop과 clear zone을 준비하고
-아래처럼 명시적으로 arm한다. 기본 최대 속도는 `0.08 m/s`, 최대 8초·최대 odom 이동 35 cm이며 공 camera range
-`0.55m`에서 멈춘다. 이 위치는 final FR kick lane이 아니라 다음 docking calibration의
-안전 staging 위치다.
+정상은 `MCF_WEBRTC_REMOTE_PREEMPT_PHYSICAL_INPUT_OBSERVED`다. 그 JSON을 보존한 뒤,
+아래 dry-run이 `DRY_RUN_READY`를 내는지 확인한다. 이 명령은 robot publisher를 만들지 않는다.
 
 ```bash
-python hardware/go2_edu_stationary_kick/approach_ball_to_tag.py \
-  --interface eth0 --tag-id 11 --execute --disable-obstacle-avoidance \
-  --operator-confirm OBSTACLE_OVERRIDE_READY
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11
 ```
 
-camera optical-frame lateral 값만으로는 FR foot의 physical lateral offset을 증명할 수
-없으므로, `--enable-lateral`은 기본 비활성이다. 이 옵션은 FR lane 실측 보정 뒤에만 쓴다.
-이것이 없는 상태에서 final LowCmd kick을 자동 연결하는 것은 금지한다.
+clear floor, physical remote/E-stop, 위 remote evidence가 준비된 경우에만 명시적으로 arm한다.
+continuous drive가 아니라 최대 5개의 bounded pulse와 start-pose에서 최대 0.35m travel만
+허용한다. `CAMERA_STAGING_READY`가 아닌 모든 결과는 neutral로 중단한 것이며, 특히 이 성공은
+final FR foot lane, LowCmd handoff, 킥/Tag hit success가 아니다.
+
+```bash
+evidence=$(ls -t hardware_measurements/go2_mcf_webrtc_remote_preempt_*.json | head -1)
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11 \
+  --execute --remote-preempt-evidence "$evidence" \
+  --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
+```
 
 
 ### YOLO11n immediate replacement
