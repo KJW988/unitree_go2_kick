@@ -71,7 +71,7 @@ python hardware/go2_edu_stationary_kick/fetch_yolov5n_model.py
 
 python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
   --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 \
-  --confidence 0.015
+  --confidence 0.015 --detection-hold-s 0.50
 ```
 
 같은 네트워크의 노트북 browser에서 `http://ROBOT_IP:8080`을 연다. 예를 들어 SSH가
@@ -85,6 +85,12 @@ YOLO confidence, D435i range, 검출 Tag ID를 localhost JSON으로 제공한다
 낮은 기본 confidence(`0.015`)는 현장 generic COCO model이 실제 축구공에 준 약한
 score를 화면에서 확인하기 위한 후보 임계값이다. 이 값 하나는 motion 권한이 아니며,
 보행 전에는 range·연속성·Tag geometry를 모두 통과해야 한다.
+
+YOLO의 단일-frame miss가 `ball: null`로 즉시 바뀌지 않도록 마지막 bbox를 최대 0.50초만
+보존한다. 보존 중에도 aligned depth와 floor projection은 현재 frame에서 다시 계산하며,
+`ball.detection_age_s`를 함께 내보낸다. staging은 이 값이 0.50초를 넘으면 거부하고 각
+관측에서 최대 5초만 기다린다. 따라서 짧은 frame drop은 흡수하지만 오래 사라진 공 위치로
+계속 움직이지 않는다. 이 변경을 적용하려면 기존 stream process를 종료하고 다시 시작해야 한다.
 
 ## LiDAR odometry bridge
 
