@@ -322,7 +322,7 @@ python3 scripts/export_vendor_go2_fr_kick_teacher.py \
 ```
 
 
-## MCF WebRTC bounded camera staging
+## MCF WebRTC bounded FR-lane camera staging
 
 `approach_ball_to_tag.py`는 legacy `SportClient/ObstaclesAvoidClient.Move` 경로를 쓰며,
 이 Go2 MCF firmware에서는 API acknowledgement가 있어도 실제 보행이 일어나지 않았다.
@@ -331,53 +331,80 @@ python3 scripts/export_vendor_go2_fr_kick_teacher.py \
 
 실물에서 gait가 확인된 경로는 WebRTC bridge의 App-equivalent
 `rt/wirelesscontroller`뿐이다. 새 `stage_go2_mcf_ball_tag_webrtc.py`는 D435i의 ball/Tag
-camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓰고, 0.20 joystick의 짧은 pulse마다
-neutral 3회와 재관측을 한다. 이 stage는 공/Tag가 camera에서 보이는 0.65–0.85m 준비 위치에서
-멈출 뿐, camera→base→FR extrinsic이 없는 현재 상태에서 final foot lane 또는 킥을 주장하지 않는다.
+camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓴다. 그러나 ball image center를
+robot center로 만들지 않는다. 실제 정렬 기준은 `FR toe swing/contact lane -> ball center ->
+Tag ground projection`이며, FR의 lateral offset 때문에 정상 ball bearing은 camera 중앙이
+아닐 수 있다.
 
-먼저 D435 perception terminal에서 stream을 유지한다.
+### 1. Read-only FR lane template capture
+
+먼저 바닥에서 FR toe swing/contact lane, ball center, Tag 지면투영점을 한 선으로 맞춘다.
+그 final FR lane의 yaw/lateral offset을 유지한 채 robot을 0.65–0.85m 뒤로 물려, D435i가
+ball+Tag를 동시에 보는 camera-visible staging spot에 둔다. 이 작업은 tape/물리 remote로
+수동 수행하며 LowCmd/킥은 실행하지 않는다.
+
+그 상태에서 아래 command를 실행한다. 이 파일은 D435i `state.json`만 읽고 robot command를
+전혀 만들지 않는다.
 
 ```bash
 cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-perception-py38
 unset PYTHONPATH
-python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
-  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 --confidence 0.015
+
+python hardware/go2_edu_stationary_kick/capture_d435i_fr_lane_template.py \
+  --tag-id 11 \
+  --operator-confirm FR_LANE_TEMPLATE_SPOT_MARKED
 ```
 
-다른 WebRTC MCF terminal에서 physical remote input을 같은 transport가 받는지 먼저
-read-only로 확인한다. `READY` 뒤 12초 안에 physical remote stick/button을 한 번 입력한다.
+정상은 `D435I_FR_LANE_TEMPLATE_FR_LANE_TEMPLATE_CAPTURED`다. output JSON은
+camera→base→FR extrinsic을 추정하는 파일이 아니라, valid FR lane에서 실제로 관측한
+ball/target bearing template이다.
+
+### 2. Remote preempt read-only evidence
+
+WebRTC MCF terminal에서 physical remote input을 같은 transport가 받는지 먼저 확인한다.
+`READY` 뒤 12초 안에 physical remote stick/button을 한 번 입력한다.
 
 ```bash
-cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
-source ~/miniconda3/etc/profile.d/conda.sh
 conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-mcf-webrtc-py311
 unset PYTHONPATH
 python hardware/go2_edu_stationary_kick/probe_go2_mcf_webrtc_remote_preempt.py \
   --robot-ip 192.168.123.161
 ```
 
-정상은 `MCF_WEBRTC_REMOTE_PREEMPT_PHYSICAL_INPUT_OBSERVED`다. 그 JSON을 보존한 뒤,
-아래 dry-run이 `DRY_RUN_READY`를 내는지 확인한다. 이 명령은 robot publisher를 만들지 않는다.
+정상은 `MCF_WEBRTC_REMOTE_PREEMPT_PHYSICAL_INPUT_OBSERVED`다.
+
+### 3. FR-lane dry-run, 그 다음 bounded stage
+
+먼저 아래 dry-run에서 template과 현재 perception이 모두 통과하는지 확인한다. 이 명령은
+robot publisher를 만들지 않는다.
 
 ```bash
+template=$(ls -t hardware_measurements/d435i_fr_ball_tag_camera_stage_template_*.json | head -1)
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
-  --robot-ip 192.168.123.161 --tag-id 11
+  --robot-ip 192.168.123.161 --tag-id 11 \
+  --fr-lane-template "$template"
 ```
 
-clear floor, physical remote/E-stop, 위 remote evidence가 준비된 경우에만 명시적으로 arm한다.
-continuous drive가 아니라 최대 5개의 bounded pulse와 start-pose에서 최대 0.35m travel만
-허용한다. `CAMERA_STAGING_READY`가 아닌 모든 결과는 neutral로 중단한 것이며, 특히 이 성공은
-final FR foot lane, LowCmd handoff, 킥/Tag hit success가 아니다.
+clear floor, physical remote/E-stop, template, remote evidence가 모두 준비된 경우에만
+명시적으로 arm한다. continuous drive가 아니라 최대 5개의 bounded pulse와 start-pose에서
+최대 0.35m travel만 허용한다.
 
 ```bash
 evidence=$(ls -t hardware_measurements/go2_mcf_webrtc_remote_preempt_*.json | head -1)
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --robot-ip 192.168.123.161 --tag-id 11 \
+  --fr-lane-template "$template" \
   --execute --remote-preempt-evidence "$evidence" \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
+
+`CAMERA_STAGING_READY`만 stage success다. `FR_LANE_LATERAL_ALIGNMENT_REQUIRED`,
+`REMOTE_PREEMPTED`, `ODOM_STALE`, `PERCEPTION_REJECTED_*`,
+`TRAVEL_LIMIT_REACHED`, `BALL_TOO_CLOSE_NO_REVERSE`, `CYCLE_LIMIT_REACHED`는 모두
+neutral 상태로 멈춘 fail-closed 결과다. 특히 `CAMERA_STAGING_READY`는 final FR kick
+lane도 target-hit success도 아니다.
 
 
 ### YOLO11n immediate replacement
