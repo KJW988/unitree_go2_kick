@@ -431,3 +431,8 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - 240 packet 장시간 pulse의 scheduling 지연으로 고정 self-echo expiry가 먼저 끝날 수 있어,
   active 동안 0.20초마다 0.50초 exact-value lease를 갱신하도록 변경했다. 물리 remote의
   다른 값은 계속 즉시 preempt하며 동일 값/동시 입력을 구분하지 못하는 제한은 유지한다.
+- 재실측에서 5초 동안 0.6998m를 전진해 목표보다 0.0645m 일찍 멈췄고, 정지 시 추정
+  FR→ball 0.3245m에서 1.2x LowCmd 킥이 공을 약하게 접촉했다. operator의 0.03m 추가
+  접근 관찰에 따라 목표 FR→ball을 약 0.29m(clearance 0.11m)로 보정하고, 동일 속도에서
+  도달할 수 있게 duration hard limit을 6.0초로 늘렸다. odometry 조기 정지와 정지 gate는
+  그대로 유지한다.
