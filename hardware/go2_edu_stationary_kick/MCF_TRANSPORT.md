@@ -189,8 +189,9 @@ ball bearing, Tag 지면투영 target bearing을 확인하고, LiDAR odometry st
 보내지 않는 dry-run이며 `DRY_RUN_READY`와 다음 pulse reason만 출력한다.
 
 ```bash
+template=hardware_measurements/d435i_fr_ball_tag_camera_stage_template_20260728T042707Z.json
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
-  --robot-ip 192.168.123.161 --tag-id 11
+  --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template"
 ```
 
 dry-run이 통과하고, 전방 1 m 이상 clear floor, physical remote/E-stop, direct DDS watcher가
@@ -199,7 +200,7 @@ dry-run이 통과하고, 전방 1 m 이상 clear floor, physical remote/E-stop, 
 ```bash
 status=hardware_measurements/go2_direct_remote_watchdog.json
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
-  --robot-ip 192.168.123.161 --tag-id 11 \
+  --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
   --direct-remote-status "$status" --execute \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
