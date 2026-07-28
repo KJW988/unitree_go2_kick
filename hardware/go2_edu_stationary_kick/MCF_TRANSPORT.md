@@ -119,3 +119,27 @@ python hardware/go2_edu_stationary_kick/prove_go2_mcf_webrtc_joystick.py \
 
 실행 범위는 `ly=0.20`, 50 Hz, 0.40초이고 즉시 neutral joystick 3회를 보낸다. operator의
 물리적 이동 관찰이 유일한 gait 성공 판정이다.
+
+## LiDAR odometry bounded calibration
+
+짧은 0.40초 burst는 gait initiation 위상에 따라 한 발이 나가지 않을 수 있다. 이 때문에
+approach 제어에는 고정 시간을 쓰지 않는다. `calibrate_go2_mcf_websocket_joystick_odom.py`는
+WebRTC의 `rt/utlidar/robot_pose`를 먼저 1초간 구독해 static baseline을 만들고, initial yaw
+방향 progress가 0.20 m에 도달하면 neutral joystick으로 정지한다. hard maximum은 2.0초다.
+
+```bash
+# LiDAR pose shape 및 static baseline만 확인: 운동 command 없음
+python hardware/go2_edu_stationary_kick/calibrate_go2_mcf_websocket_joystick_odom.py \
+  --robot-ip 192.168.123.161
+
+# 전방 1 m 이상 빈 바닥과 physical remote/E-stop을 준비했을 때만 실행
+python hardware/go2_edu_stationary_kick/calibrate_go2_mcf_websocket_joystick_odom.py \
+  --robot-ip 192.168.123.161 \
+  --execute \
+  --operator-confirm MCF_ODOM_CALIBRATION_EMPTY_FLOOR_ESTOP_READY
+```
+
+`TARGET_REACHED_NEUTRALIZED` 또는 `MAX_DURATION_NEUTRALIZED`는 control command가 neutral로
+끝났다는 뜻일 뿐이다. 기록된 `measured_forward_m`와 operator의 실제 측정값을 비교해야
+calibration success다. static LiDAR drift는 수 cm 가능하므로 이 단계는 target-kick alignment
+판정이 아니라 safe locomotion scale 확인에만 사용한다.
