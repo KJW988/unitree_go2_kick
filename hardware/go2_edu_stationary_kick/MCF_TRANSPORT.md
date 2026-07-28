@@ -201,3 +201,26 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
 `PERCEPTION_REJECTED_*`, `TRAVEL_LIMIT_REACHED`, `BALL_TOO_CLOSE_NO_REVERSE`,
 `CYCLE_LIMIT_REACHED`는 모두 neutral 상태로 멈춘 fail-closed 결과다. 특히
 `CAMERA_STAGING_READY`는 final FR kick lane도 target-hit success도 아니다.
+
+
+### FR lane template is mandatory
+
+이전 camera-staging planner는 ball bearing을 0으로 맞추려 했지만, 이는 robot center 기준
+정렬이며 FR foot의 lateral offset을 지운다. 실제 FR kick에는
+`FR toe swing/contact lane -> ball center -> Tag ground projection` 선을 기준으로 해야 한다.
+따라서 stage controller는 이제 `capture_d435i_fr_lane_template.py`가 만든 template 없이는
+dry-run을 `FR_LANE_TEMPLATE_REQUIRED`, execute를 `FR_LANE_TEMPLATE_REJECTED`로 끝낸다.
+
+template capture 전에 operator는 valid FR lane에서 robot의 yaw/lateral offset을 유지한 채
+0.65–0.85m 뒤로 물려 D435i가 ball+Tag를 동시에 보는 spot을 만들어야 한다. capture는
+D435i HTTP state만 읽고 motion command를 만들지 않는다.
+
+```bash
+python hardware/go2_edu_stationary_kick/capture_d435i_fr_lane_template.py \
+  --tag-id 11 --operator-confirm FR_LANE_TEMPLATE_SPOT_MARKED
+```
+
+후속 stage는 template의 desired ball bearing과 desired target bearing을 동시에 보정한다.
+두 error가 반대 부호이면 in-place yaw로 해결할 수 없는 lateral/base mismatch이므로
+`FR_LANE_LATERAL_ALIGNMENT_REQUIRED`로 neutral stop한다. 이 결과에서 lateral virtual
+joystick이나 final LowCmd docking을 임의로 추가하지 않는다.
