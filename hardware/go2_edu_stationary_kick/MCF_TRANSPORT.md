@@ -185,7 +185,7 @@ WebRTC virtual joystick도 같은 `rt/wirelesscontroller` DDS topic에 echo된�
 대신 `stage_go2_mcf_ball_tag_webrtc.py`는 이미 physical gait가 검증된 WebRTC
 `rt/wirelesscontroller`만 사용한다.
 
-이 stage는 D435i `state.json`에서 3개의 안정 frame에 대해 ball depth/YOLO confidence,
+이 stage는 D435i `state.json`에서 3개의 안정 sample에 대해 ball depth/YOLO confidence,
 ball bearing, Tag 지면투영 target bearing을 확인하고, LiDAR odometry static baseline과
 0.35 m travel hard limit을 통과할 때만 동작한다. continuous drive가 아니라 0.20 magnitude의
 짧은 pulse 뒤 neutral 3회와 재관측을 반복한다. yaw pulse는 0.50초다(이 실물에서 0.20초는
@@ -194,6 +194,11 @@ gait initiation 전에 끝날 수 있었다). 기본 staging depth는 0.65–0.8
 상대 bearing의 측방 보정 → yaw 재확인 → 전진이다. robot yaw는 공과 Tag를 거의 함께 회전시키므로
 상대적인 lateral lane 오차를 고칠 수 없다. 따라서 yaw 정렬 뒤 남은 상대 bearing을
 `--allow-lateral-search`의 0.50초 lateral probe와 다음 D435i depth 관측으로 보정한다.
+
+현장 generic detector의 intermittent miss 때문에 stream은 마지막 YOLO bbox를 최대 0.50초만
+보존하고, 현재 aligned-depth frame에서 range/floor geometry를 다시 계산한다. state에는
+`ball.detection_age_s`가 포함되며 stage는 0.50초보다 오래된 bbox를 거부한다. 각 관측의
+bounded retry는 5초다. 즉 짧은 frame drop만 흡수하고 장시간 공이 사라지면 계속 fail-closed한다.
 
 `CAMERA_STAGING_READY`에는 실측 camera FR lane template 기준 `kick_ready.eligible=true`가
 기록되지만 LowCmd를 자동으로 시작하지 않는다. 현재 MCF→LowCmd release와 LowCmd→MCF
