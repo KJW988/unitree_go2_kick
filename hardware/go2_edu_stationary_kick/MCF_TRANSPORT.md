@@ -93,3 +93,29 @@ python hardware/go2_edu_stationary_kick/prove_go2_mcf_webrtc_walk.py \
 
 성공 판정은 log의 `COMMAND_AND_STOP_ACKED`와 operator의 실제 전진 관찰을 **둘 다** 만족하는
 것이다. SDK return code/telemetry만으로 physical gait 성공이라고 판단하지 않는다.
+
+### `Move(1008)` rejection pattern과 joystick fallback
+
+이 robot에서는 MCF `Move(1008)`와 `StopMove(1003)` 모두 acknowledgement를 반환하고
+`lf_sportmodestate.velocity`도 변했지만 physical gait가 관찰되지 않았다. 이 값은 실제 body
+translation의 증거가 아니므로 `COMMAND_AND_STOP_ACKED`만으로 success를 선언하지 않는다.
+
+그 WebRTC driver의 Go2 obstacle-avoid example은 보행을 `Move(1008)`이 아니라 App-equivalent
+`rt/wirelesscontroller` joystick payload로 수행한다. 이 repository는 **직접 DDS publisher를
+만들지 않고**, WebRTC bridge에서만 이 경로를 쓴다. LiDAR obstacle avoidance는 절대 끄거나
+변경하지 않는다.
+
+```bash
+# 먼저 운동 command 없는 preflight
+python hardware/go2_edu_stationary_kick/prove_go2_mcf_webrtc_joystick.py \
+  --robot-ip 192.168.123.161
+
+# empty floor, physical remote/E-stop 준비 후에만 실제 burst
+python hardware/go2_edu_stationary_kick/prove_go2_mcf_webrtc_joystick.py \
+  --robot-ip 192.168.123.161 \
+  --execute \
+  --operator-confirm MCF_JOYSTICK_EMPTY_FLOOR_ESTOP_READY
+```
+
+실행 범위는 `ly=0.20`, 50 Hz, 0.40초이고 즉시 neutral joystick 3회를 보낸다. operator의
+물리적 이동 관찰이 유일한 gait 성공 판정이다.
