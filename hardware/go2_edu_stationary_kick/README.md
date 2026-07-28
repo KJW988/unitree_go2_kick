@@ -153,6 +153,9 @@ pulse 직전에 좁은 local echo-window를 쓰고 watcher는 그 window의 **�
 없어서 해당 매우 짧은 window 동안 physical remote가 virtual packet과 완전히 같은 값까지
 보내면 구별 불가하다. 이 한계는 watchdog status JSON에도 기록되며 E-stop/physical remote는
 여전히 operator의 1차 안전 수단이다.
+watcher는 실행 중 Python code가 갱신되지 않으므로 `git pull` 뒤 반드시 재시작한다. stage는
+status의 `virtual_echo_protocol_version`과 echo-window 경로가 최신 계약과 일치하지 않으면
+execute를 거부한다.
 
 ```bash
 cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
@@ -201,6 +204,13 @@ WebRTC joystick으로 최대 5초/0.85m 동안 보내며, LiDAR odometry가 목�
 camera ground projection→FR은 robot 전방을 `+`, 뒤쪽을 `-`로 넣고 FR→ball center는
 전방 양수로 넣는다. 예를 들어 head lens가 FR보다 0.15m 앞이면 camera→FR은 `-0.15`,
 FR→ball은 `+0.15`다.
+
+통합 runner의 기본 `--lane-axis-bearing-rad 0.0`은 D435i가 robot 전진축과 평행하게
+장착됐다는 현장 조건에서 ball→Tag 지면축을 body/FR 전진축과 평행하게 만든다. captured
+template의 range와 ball-Tag 상대 bearing은 그대로 사용한다. heading deadband는 0.03rad이며,
+yaw command는 LiDAR odometry가 요청 yaw 변화량을 확인하면 pulse 상한 전에 neutralize한다.
+카메라 yaw가 body와 평행하지 않다면 0.0을 임의로 쓰지 말고 mount yaw를 실측해 이 값을
+바꿔야 한다.
 
 ```bash
 python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py --help
