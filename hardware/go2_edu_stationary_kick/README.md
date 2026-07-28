@@ -188,6 +188,18 @@ firmware에서 MCF→LowCmd release와 LowCmd 종료 뒤 MCF 복귀는 토크 �
 LowCmd baseline hold를 유지하고, **MCF 자동 handback은 하지 않는다.** 종료 뒤
 ownership/자세 복구는 operator가 해야 한다.
 
+실물 로그에서 0.50초 forward pulse는 매번 gait initiation 직후 neutral로 끊겨 2회 합계
+약 0.03m만 이동했다. 따라서 forward command 상한은 calibration에서 검증된 2.0초로 두되,
+각 pulse는 LiDAR odometry가 계산한 목표 거리(기본 최대 0.12m)에 도달하는 즉시 중간에
+neutralize한다. duration을 길게 만든 것이 open-loop 이동거리 증가를 뜻하지 않는다.
+
+통합 runner는 camera staging 뒤 `--camera-to-fr-forward-m`과
+`--fr-to-ball-forward-m`의 실측 signed-forward 합을 최종 camera-ground→ball-center 목표로
+사용한다. D435i floor plane에서 현재 ground range를 계산하고 그 차이만 WebRTC joystick으로
+최대 4초/0.60m 동안 보내며, LiDAR odometry가 목표를 확인해야만 `FINAL_DOCKING_READY`가 된다.
+그 결과가 아니면 LowCmd child를 시작하지 않는다. 두 forward 값은 모두 **camera ground
+projection→FR→ball center가 robot 전방(+)**이라는 설치에서만 양수로 넣는다.
+
 ```bash
 python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py --help
 ```
