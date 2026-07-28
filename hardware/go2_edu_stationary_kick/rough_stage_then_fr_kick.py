@@ -120,8 +120,8 @@ def main() -> int:
     parser.add_argument("--camera-to-fr-forward-m", type=float, required=True)
     parser.add_argument("--fr-to-ball-forward-m", type=float, required=True)
     parser.add_argument("--final-dock-max-m", type=float, default=0.85)
-    parser.add_argument("--final-dock-max-duration-s", type=float, default=5.0)
-    parser.add_argument("--final-gait-to-kick-clearance-m", type=float, default=0.08)
+    parser.add_argument("--final-dock-max-duration-s", type=float, default=6.0)
+    parser.add_argument("--final-gait-to-kick-clearance-m", type=float, default=0.11)
     parser.add_argument("--final-settle-timeout-s", type=float, default=2.0)
     parser.add_argument("--interface", default="eth0")
     parser.add_argument("--lowcmd-python", type=Path, required=True)
@@ -172,8 +172,8 @@ def main() -> int:
         parser.error("camera-to-FR은 signed [-0.40,0.40], FR-to-ball은 (0,0.40]이어야 합니다")
     if not 0.05 <= args.final_dock_max_m <= 0.85:
         parser.error("--final-dock-max-m은 [0.05, 0.85] 범위여야 합니다")
-    if not 1.0 <= args.final_dock_max_duration_s <= 5.0:
-        parser.error("--final-dock-max-duration-s는 [1.0, 5.0] 범위여야 합니다")
+    if not 1.0 <= args.final_dock_max_duration_s <= 6.0:
+        parser.error("--final-dock-max-duration-s는 [1.0, 6.0] 범위여야 합니다")
     if not 0.05 <= args.final_gait_to_kick_clearance_m <= 0.15:
         parser.error("--final-gait-to-kick-clearance-m은 [0.05, 0.15] 범위여야 합니다")
     if not 1.0 <= args.final_settle_timeout_s <= 3.0:
