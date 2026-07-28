@@ -47,11 +47,16 @@ FORWARD_PULSE_S = 2.00
 MAX_FORWARD_PULSE_TRAVEL_M = 0.12
 FINAL_DOCK_MAX_M = 0.85
 FINAL_DOCK_MAX_DURATION_S = 5.0
-# 0.20 s는 이 실물에서 gait initiation 전에 끝날 수 있었다. yaw도 한 번의 bounded
-# observation pulse가 필요하므로, magnitude는 그대로 두고 duration만 0.50 s로 둔다.
-TURN_PULSE_S = 0.50
-# lateral도 gait initiation 전에 끝나지 않도록 yaw와 같은 bounded 0.50 s probe를 쓴다.
-LATERAL_PULSE_S = 0.50
+# 0.50 s도 이 실물에서 gait initiation 경계라 몸만 움찔하고 끝나는 실행이 있었다.
+# magnitude는 그대로 두고 yaw/lateral pulse 상한을 0.80 s로 둔다. odometry 목표를
+# 연속 확인하면 상한 전에 neutralize하므로 0.80 s open-loop 회전을 강제하지 않는다.
+TURN_PULSE_S = 0.80
+LATERAL_PULSE_S = 0.80
+MIN_ODOM_STOP_ACTIVE_S = 0.60
+ODOM_STOP_CONFIRM_SAMPLES = 3
+# camera staging까지 수 cm만 남으면 작은 pulse가 gait initiation을 반복한다. 이 구간은
+# 정렬을 다시 확인한 뒤 odometry-bounded continuous final dock으로 넘긴다.
+CAMERA_STAGE_ENTRY_SLACK_M = 0.04
 NEUTRAL_PACKET_COUNT = 3
 STATE_SETTLE_S = 1.0
 REOBSERVE_SETTLE_S = 0.50
@@ -471,7 +476,9 @@ def action_for(
         return "lateral_to_fr_lane", math.copysign(args.joystick_magnitude, lateral_sign), 0.0, 0.0
     if perception.ball_range_m < lane.desired_ball_range_m - lane.range_tolerance_m:
         return "ball_too_close_no_reverse", 0.0, 0.0, 0.0
-    if perception.ball_range_m <= lane.desired_ball_range_m + lane.range_tolerance_m:
+    if perception.ball_range_m <= (
+        lane.desired_ball_range_m + lane.range_tolerance_m + args.camera_stage_entry_slack_m
+    ):
         return "camera_staging_ready", 0.0, 0.0, 0.0
     return "forward", 0.0, args.joystick_magnitude, 0.0
 
@@ -573,7 +580,11 @@ async def joystick_pulse(
     packets = 0
     termination = "pulse_complete"
     last_pose_count = len(odom_poses) if odom_poses is not None else 0
+    checked_pose_count = last_pose_count
     last_odom_at = time.monotonic()
+    pulse_started_at = time.monotonic()
+    forward_confirmation_count = 0
+    yaw_confirmation_count = 0
     arm_virtual_echo_window(
         args.virtual_echo_window, lx=lx, ly=ly, rx=rx, duration_s=duration_s,
     )
@@ -587,18 +598,36 @@ async def joystick_pulse(
                 if time.monotonic() - last_odom_at > args.max_odom_stale_s:
                     termination = "odom_stale_during_pulse"
                     break
+                # robot_odom의 gait/body transient 한 샘플이 3 cm 목표를 넘었다고 즉시
+                # neutralize하면 실제 발걸음 전에 몸만 움찔한다. 최소 active time 뒤,
+                # 서로 다른 새 odometry 샘플이 연속으로 목표를 확인할 때만 끝낸다.
                 if (
-                    stop_after_forward_m is not None
-                    and odom_poses
-                    and forward_progress_m(start_pose, odom_poses[-1]) >= stop_after_forward_m
+                    odom_poses
+                    and len(odom_poses) != checked_pose_count
+                    and time.monotonic() - pulse_started_at >= args.min_odom_stop_active_s
                 ):
-                    termination = "forward_odom_target_reached"
-                    break
-            if stop_after_yaw_rad is not None and odom_poses:
-                yaw_progress = abs(angle_distance(odom_poses[-1]["yaw_rad"], start_pose["yaw_rad"]))
-                if yaw_progress >= stop_after_yaw_rad:
-                    termination = "yaw_odom_target_reached"
-                    break
+                    checked_pose_count = len(odom_poses)
+                    if stop_after_forward_m is not None:
+                        forward_reached = (
+                            forward_progress_m(start_pose, odom_poses[-1]) >= stop_after_forward_m
+                        )
+                        forward_confirmation_count = (
+                            forward_confirmation_count + 1 if forward_reached else 0
+                        )
+                        if forward_confirmation_count >= args.odom_stop_confirm_samples:
+                            termination = "forward_odom_target_reached_confirmed"
+                            break
+                    if stop_after_yaw_rad is not None:
+                        yaw_progress = abs(angle_distance(
+                            odom_poses[-1]["yaw_rad"], start_pose["yaw_rad"],
+                        ))
+                        yaw_confirmation_count = (
+                            yaw_confirmation_count + 1
+                            if yaw_progress >= stop_after_yaw_rad else 0
+                        )
+                        if yaw_confirmation_count >= args.odom_stop_confirm_samples:
+                            termination = "yaw_odom_target_reached_confirmed"
+                            break
             watchdog, watchdog_reason = load_direct_remote_watchdog(
                 args.direct_remote_status,
                 max_age_s=args.direct_remote_max_age_s,
@@ -729,6 +758,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "same_value_physical_input_during_echo_window_unobservable": True,
                 "joystick_magnitude": args.joystick_magnitude,
                 "rate_hz": COMMAND_RATE_HZ,
+                "min_odom_stop_active_s": args.min_odom_stop_active_s,
+                "odom_stop_confirm_samples": args.odom_stop_confirm_samples,
+                "camera_stage_entry_slack_m": args.camera_stage_entry_slack_m,
                 "observation_timeout_s": args.observation_timeout_s,
                 "lane_axis_bearing_rad": args.lane_axis_bearing_rad,
                 "target_bearing_tolerance_rad": args.target_bearing_tolerance_rad,
@@ -976,7 +1008,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 remaining_to_stage_m = max(
                     0.0,
                     perception.ball_range_m
-                    - (lane_template.desired_ball_range_m + lane_template.range_tolerance_m),
+                    - (
+                        lane_template.desired_ball_range_m
+                        + lane_template.range_tolerance_m
+                        + args.camera_stage_entry_slack_m
+                    ),
                 )
                 stop_after_forward_m = min(
                     args.max_forward_pulse_travel_m,
@@ -1072,6 +1108,18 @@ def main() -> int:
     parser.add_argument("--target-bearing-tolerance-rad", type=float, default=0.10)
     parser.add_argument("--ball-bearing-tolerance-rad", type=float, default=0.12)
     parser.add_argument("--joystick-magnitude", type=float, default=JOYSTICK_MAGNITUDE)
+    parser.add_argument(
+        "--min-odom-stop-active-s", type=float, default=MIN_ODOM_STOP_ACTIVE_S,
+        help="gait/body transient를 이동으로 오판하지 않도록 odometry stop을 금지할 최소 active 시간",
+    )
+    parser.add_argument(
+        "--odom-stop-confirm-samples", type=int, default=ODOM_STOP_CONFIRM_SAMPLES,
+        help="forward/yaw 목표 도달을 확정할 연속 새 odometry sample 수",
+    )
+    parser.add_argument(
+        "--camera-stage-entry-slack-m", type=float, default=CAMERA_STAGE_ENTRY_SLACK_M,
+        help="수 cm pulse 반복 대신 bounded final dock으로 넘길 camera staging 추가 여유",
+    )
     parser.add_argument("--forward-pulse-s", type=float, default=FORWARD_PULSE_S)
     parser.add_argument(
         "--max-forward-pulse-travel-m", type=float, default=MAX_FORWARD_PULSE_TRAVEL_M,
@@ -1134,6 +1182,12 @@ def main() -> int:
         parser.error("max-forward-pulse-travel-m은 [0.03, 0.15] 범위여야 합니다")
     if not 0.50 <= args.forward_pulse_s <= 2.0:
         parser.error("forward-pulse-s는 [0.50, 2.0] 범위여야 합니다")
+    if not 0.20 <= args.min_odom_stop_active_s <= 1.0:
+        parser.error("--min-odom-stop-active-s는 [0.20, 1.0] 범위여야 합니다")
+    if not 2 <= args.odom_stop_confirm_samples <= 10:
+        parser.error("--odom-stop-confirm-samples는 [2, 10] 범위여야 합니다")
+    if not 0.0 <= args.camera_stage_entry_slack_m <= 0.06:
+        parser.error("--camera-stage-entry-slack-m은 [0.0, 0.06] 범위여야 합니다")
     if args.enable_final_dock and not (
         -0.40 <= args.camera_to_fr_forward_m <= 0.40
         and 0.0 < args.fr_to_ball_forward_m <= 0.40
