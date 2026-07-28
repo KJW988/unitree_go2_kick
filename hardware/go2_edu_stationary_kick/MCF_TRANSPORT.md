@@ -181,9 +181,16 @@ python hardware/go2_edu_stationary_kick/watch_go2_physical_remote_dds.py \
 이 stage는 D435i `state.json`에서 3개의 안정 frame에 대해 ball depth/YOLO confidence,
 ball bearing, Tag 지면투영 target bearing을 확인하고, LiDAR odometry static baseline과
 0.35 m travel hard limit을 통과할 때만 동작한다. continuous drive가 아니라 0.20 magnitude의
-짧은 yaw/forward pulse 뒤 neutral 3회와 재관측을 반복한다. 기본 staging depth는 0.65–0.85 m다.
-따라서 공과 Tag가 camera에서 보이는 정렬 준비까지만 수행하며, camera→base→FR transform이
-없는 현재 상태에서는 FR foot lane/LowCmd kick을 호출하지 않는다.
+짧은 pulse 뒤 neutral 3회와 재관측을 반복한다. 기본 staging depth는 0.65–0.85 m다. 동작
+우선순위는 Tag ground-ray yaw 정렬 → FR lane ball-bearing 측방 보정 → 전진이다. Tag yaw는
+robot 회전으로 먼저 맞추고, lateral 방향은 `--allow-lateral-search`일 때만 0.20초 probe와
+다음 D435i depth 관측의 improvement로 정한다. 따라서 반대 bearing 오차를 이유로 회전 전에
+중단하지 않는다.
+
+`CAMERA_STAGING_READY`에는 실측 camera FR lane template 기준 `kick_ready.eligible=true`가
+기록되지만 LowCmd를 자동으로 시작하지 않는다. 현재 MCF→LowCmd release와 LowCmd→MCF
+handback은 실물에서 토크 공백/떨림/주저앉음을 보였고 firmware-level atomic handoff API가
+확인되지 않았다. 따라서 LowCmd handoff는 별도의 harness process에서만 명시 실행한다.
 
 먼저 D435i stream을 별도 perception terminal에서 유지한다. 다음 command는 motion command를
 보내지 않는 dry-run이며 `DRY_RUN_READY`와 다음 pulse reason만 출력한다.
@@ -205,7 +212,18 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
 
-`CAMERA_STAGING_READY`만 stage success다. `PHYSICAL_REMOTE_PREEMPTED`,
+dry-run의 `turn_to_tag_ray`는 첫 실행이 yaw pulse만 한다는 뜻이다. yaw 뒤
+`lateral_to_fr_lane`이면 다음 one-cycle probe를 명시적으로 arm한다.
+
+```bash
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
+  --direct-remote-status "$status" --allow-lateral-search --max-cycles 1 --execute \
+  --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
+```
+
+`CAMERA_STAGING_READY`만 stage success다. `LATERAL_SEARCH_NOT_ARMED`,
+`LATERAL_PROBE_NO_CONVERGENCE`, `PHYSICAL_REMOTE_PREEMPTED`,
 `DIRECT_REMOTE_WATCHDOG_LOST`, `ODOM_STALE`,
 `PERCEPTION_REJECTED_*`, `TRAVEL_LIMIT_REACHED`, `BALL_TOO_CLOSE_NO_REVERSE`,
 `CYCLE_LIMIT_REACHED`는 모두 neutral 상태로 멈춘 fail-closed 결과다. 특히
