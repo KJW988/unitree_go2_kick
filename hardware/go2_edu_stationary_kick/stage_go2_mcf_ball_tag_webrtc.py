@@ -372,8 +372,14 @@ def action_for(
     lateral 부호는 관측으로만 정하고 연속 이동으로 가정하지 않는다.
     """
     errors = fr_lane_bearing_errors(perception, lane)
+    # 0.20/0.50 s yaw pulse의 실물 해상도보다 작은 target 오차까지 매번 회전시키면
+    # 공이 FOV 밖으로 나갈 수 있다. 이 값은 rough camera staging의 yaw deadband이며,
+    # strict FR lane/kick 허용오차 자체를 완화하는 값은 아니다.
+    target_action_tolerance = max(
+        lane.target_bearing_tolerance_rad, args.target_bearing_tolerance_rad,
+    )
     target_error = errors["target_error_rad"]
-    if abs(target_error) > lane.target_bearing_tolerance_rad:
+    if abs(target_error) > target_action_tolerance:
         # Upstream example convention: +rx left turn, -rx right turn.
         return "turn_to_tag_ray", 0.0, 0.0, -math.copysign(args.joystick_magnitude, target_error)
     # yaw 뒤에도 남는 ball-vs-Tag 상대 bearing은 FR toe가 공 중심 뒤 선상에 없다는 뜻이다.
@@ -697,12 +703,25 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             }
             result["cycles"].append(cycle)
             if reason == "camera_staging_ready":
+                strict_errors = fr_lane_bearing_errors(perception, lane_template)
+                strict_lane_ready = (
+                    abs(strict_errors["ball_error_rad"]) <= lane_template.ball_bearing_tolerance_rad
+                    and abs(strict_errors["target_error_rad"]) <= lane_template.target_bearing_tolerance_rad
+                    and abs(strict_errors["relative_error_rad"]) <= min(
+                        lane_template.ball_bearing_tolerance_rad,
+                        lane_template.target_bearing_tolerance_rad,
+                    )
+                )
                 result["verdict"] = "CAMERA_STAGING_READY"
                 result["kick_ready"] = {
-                    "eligible": True,
+                    "eligible": strict_lane_ready,
                     "geometry_source": "D435i FR lane template",
                     "lowcmd_started": False,
-                    "reason": "MCF_to_LowCmd ownership handoff remains a separate harness action",
+                    "reason": (
+                        "strict FR lane geometry passed; MCF_to_LowCmd ownership handoff remains a separate harness action"
+                        if strict_lane_ready else
+                        "rough camera staging only; strict FR lane geometry and LowCmd handoff remain unapproved"
+                    ),
                 }
                 break
             if reason == "ball_too_close_no_reverse":
