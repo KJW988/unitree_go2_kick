@@ -139,6 +139,13 @@ watcher는 publisher를 만들지 않는다. `READY` 뒤 empty floor/E-stop 상�
 stick을 잠깐 입력해 `physical_input_event_count`를 1 이상으로 만들고, 실행 전에는 stick을
 중립으로 돌린 뒤 0.6초 이상 기다린다.
 
+WebRTC virtual joystick도 같은 `rt/wirelesscontroller` DDS topic에 echo되므로, walker는
+pulse 직전에 좁은 local echo-window를 쓰고 watcher는 그 window의 **동일 값**만 self-echo로
+제외한다. 다른 stick/button 값은 계속 preempt한다. SDK callback에는 DDS writer identity가
+없어서 해당 매우 짧은 window 동안 physical remote가 virtual packet과 완전히 같은 값까지
+보내면 구별 불가하다. 이 한계는 watchdog status JSON에도 기록되며 E-stop/physical remote는
+여전히 operator의 1차 안전 수단이다.
+
 ```bash
 cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
 source ~/miniconda3/etc/profile.d/conda.sh
