@@ -12,6 +12,15 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - `perception_missing` 단일 사유를 HTTP/not-ready/ball/tag/field/geometry 원인으로 나눠
   다음 실물 로그에서 frame drop과 server 문제를 구분할 수 있게 했다.
 
+## 2026-07-28 — Odometry-bounded gait initiation 및 final docking
+
+- 0.50초 forward pulse 2회가 실제로는 총 0.030m만 이동한 실물 로그에 따라, forward
+  command 상한을 2.0초로 바꾸고 pulse 시작 yaw의 LiDAR odometry가 기본 0.12m 목표에
+  도달하면 loop 도중 neutralize하도록 했다.
+- D435i floor plane에서 camera ground projection→ball center 거리를 계산하고, 실측
+  camera→FR 및 FR→ball forward 합까지의 남은 거리를 WebRTC/LiDAR로 닫는 opt-in final
+  docking을 추가했다. 최대 4초/0.60m이며 `FINAL_DOCKING_READY`만 LowCmd 연결을 허용한다.
+
 ## 2026-07-27 — Go2 EDU FR teacher software-only export / dry-run 준비
 
 - `scripts/export_vendor_go2_fr_kick_teacher.py`를 추가했다. Isaac Gym, SDK, DDS 없이 default `make_offsets()` 수식과 vendor Go2 nominal pose를 50 Hz `.npz`/CSV artifact로 고정하며 canonical 및 SDK motor 순서와 teacher source hash를 함께 기록한다.
