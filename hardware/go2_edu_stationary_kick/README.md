@@ -174,6 +174,18 @@ camera FR lane template의 `kick_ready.eligible`일 뿐 LowCmd를 자동 시작�
 firmware에서 MCF→LowCmd release와 LowCmd 종료 뒤 MCF 복귀는 토크 공백/떨림/주저앉음을 실제로
 보였으므로, ownership handoff는 `live_baseline_fr_preset.py`의 별도 harness 실행으로 유지한다.
 
+시간 제한이 있는 rough demonstration에서만
+`rough_stage_then_fr_kick.py`가 bounded WebRTC staging 뒤 이미 검증한
+`live_baseline_fr_preset.py` direct-release harness를 별도 SDK Python으로 실행할 수 있다.
+새 LowCmd path를 만들지 않으며, strict template 오차가 남은 상태의 kick은
+`--allow-rough-kick`을 별도로 요구한다. kick child는 지정한 `--kick-hold-after-s` 동안만
+LowCmd baseline hold를 유지하고, **MCF 자동 handback은 하지 않는다.** 종료 뒤
+ownership/자세 복구는 operator가 해야 한다.
+
+```bash
+python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py --help
+```
+
 ```bash
 status=hardware_measurements/go2_direct_remote_watchdog.json
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
