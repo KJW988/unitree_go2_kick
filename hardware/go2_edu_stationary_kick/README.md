@@ -149,8 +149,9 @@ watcher는 별도 terminal에서 계속 유지한다. 다른 WebRTC MCF terminal
 `DRY_RUN_READY`를 내는지 확인한다. 이 명령은 robot publisher를 만들지 않는다.
 
 ```bash
+template=hardware_measurements/d435i_fr_ball_tag_camera_stage_template_20260728T042707Z.json
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
-  --robot-ip 192.168.123.161 --tag-id 11
+  --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template"
 ```
 
 clear floor, physical remote/E-stop, 위 direct DDS watchdog이 heartbeat와 physical input proof를
@@ -162,7 +163,7 @@ final FR foot lane, LowCmd handoff, 킥/Tag hit success가 아니다.
 ```bash
 status=hardware_measurements/go2_direct_remote_watchdog.json
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
-  --robot-ip 192.168.123.161 --tag-id 11 \
+  --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
   --direct-remote-status "$status" --execute \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
