@@ -406,3 +406,17 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
 - nominal y=0 control은 dynamic `delta=0`으로 `forward=1.7673 m`,
   `lateral=-0.1520 m`를 재현했다. 즉 기존 teacher를 훼손하지 않았지만 single
   FR swing tangent는 4 cm 이상 lane miss를 강+정확 킥으로 확장하지 못한다.
+
+## 2026-07-28 — Go2 MCF gait-initiation false-stop 보정
+
+- 실물 WebRTC staging 로그에서 0.03m forward 목표를 `robot_odom`의 body/gait
+  transient 한 샘플이 먼저 넘기면서, 실제 step 전에 neutral로 전환되는 원인을 확인했다.
+- `stage_go2_mcf_ball_tag_webrtc.py`는 active command 0.60초 뒤 서로 다른 새 odometry
+  sample 3개가 연속으로 목표를 확인할 때만 forward/yaw pulse를 종료한다. 동일 sample을
+  50Hz command loop에서 중복 확인하지 않는다.
+- yaw/lateral pulse 상한은 gait initiation 여유를 위해 0.80초로 변경했다. camera staging
+  잔여거리 0.04m 이내는 짧은 pulse를 반복하지 않고 기존 bounded final dock으로 넘긴다.
+  joystick magnitude 0.20, 전체 travel/duration hard limit, remote preemption은 유지했다.
+- 검증: Python 3.8 `py_compile`, 두 entry point `--help`, `git diff --check`, synthetic
+  odometry에서 최소 active time/새 sample 3회/동일 sample 비중복 확인을 통과했다.
+  실제 전진·yaw·lateral gait와 final LowCmd 연결은 Go2에서 재검증해야 한다.
