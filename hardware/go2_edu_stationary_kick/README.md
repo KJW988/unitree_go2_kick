@@ -216,7 +216,11 @@ neutralize한다. duration을 길게 만든 것이 open-loop 이동거리 증가
 추가 실물 로그에서 0.03m 목표를 robot_odom의 gait/body transient 한 샘플이 먼저 넘겨
 전진·회전이 실제 step 전에 끊기는 현상을 확인했다. 이제 odometry stop은 active command를
 최소 0.60초 유지한 뒤 서로 다른 새 sample 3개가 연속으로 목표를 확인해야 작동한다.
-yaw/lateral pulse 상한은 gait initiation 여유를 위해 0.80초다. camera-visible 목표까지
+yaw pulse 상한은 0.80초다. lateral은 0.80초 pulse 6회에도 LiDAR 실측 횟이동이
+4.5mm에 그친 실물 로그에 따라 2.0초 continuous command로 바꾸었다. 단, open-loop로
+2초를 강제하지 않고 최대 0.08m의 LiDAR body-frame 횟변위가 새 sample 3개에서
+연속 확인되면 즉시 neutralize한다. 남은 bearing 오차를 거리로 근사해 0.04–0.08m
+범위로 한 번만 이동한 뒤 다음 D435i frame에서 재관측한다. camera-visible 목표까지
 0.04m 이내인 작은 잔여 거리는 짧은 pulse를 반복하지 않고, 정렬을 다시 gate한 뒤 기존
 LiDAR-odometry bounded final dock으로 넘긴다. joystick magnitude 0.20과 전체 travel/duration
 hard limit은 그대로다.
@@ -349,11 +353,14 @@ depth/floor plane, bearing tolerance, LiDAR odometry, final settle 및 remote wa
 그대로 유지된다.
 
 dry-run이 `lateral_to_fr_lane`이면, 이것은 먼저 FR lane으로 게걸음해야 한다는 뜻이다. clear
-floor에서 아래 command는 `lx=+0.20` pulse **1회**, 안정 재관측 **1회**만 수행한 뒤 neutral로
+floor에서 아래 command는 `lx=+0.20` pulse **1회**(최대 2.0초/횟변위 0.08m),
+안정 재관측 **1회**만 수행한 뒤 neutral로
 끝낸다. 출력의 `lateral_probe_results[0].improvement_rad > 0` 및
 `recommended_lateral_sign`을 확인한다. `sign_confirmed`이면 그 부호를 다음 full-stage의
 `--lateral-sign`과 `--lateral-sign-confirmed`에 그대로 사용한다. `flip_sign_and_retry`이면
 반대 부호로 같은 probe-only command를 한 번 더 실행한다.
+부호가 확인된 뒤에도 relative bearing이 0을 지나치면 관측된 lateral response 부호로
+다음 `lx` 방향을 자동 반전해 overshoot를 막는다.
 
 ```bash
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
