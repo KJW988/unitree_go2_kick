@@ -2,6 +2,47 @@
 
 Log of all changes made during the Go2 Kick RL debugging and implementation task.
 
+## 2026-07-29 — 보행 잔동작 억제 및 adaptive MCF→LowCmd kick 전환
+
+- 통합 runner의 target-ray deadband를 0.04rad로 두어 실물 yaw gait 해상도보다 작은 회전
+  반복을 막고, forward odometry 목표를 pulse당 최대 0.15m로 늘려 짧은 start/neutral
+  반복을 줄였다. 최소 0.60초 active와 서로 다른 odometry sample 3회 gate는 유지한다.
+- 고정 `camera→FR` 거리 gate를 direct DDS LowState+Go2 URDF FR FK gate로 교체했다.
+  실물에서 `FR body x=0.185136m`, 렌즈가 FR보다 0.15m 전방이라는 동시
+  측정으로 `camera body x=0.335136m`를 고정 보정했다. 5호 공 반지름 0.11m와
+  FR→공 표면 목표 0.15m를 합쳐 보행 종료 중심거리를 0.26m로 계산한다.
+- final neutral 후 fresh FK로 추정한 표면 gap 0.10–0.17m와 FR foot speed 0.05m/s
+  이하를 모두 통과해야만 `FINAL_DOCKING_READY`를 낸다. FK stale, 간격 이탈,
+  FR 미정지인 모든 경우 LowCmd child를 시작하지 않는다.
+- `live_baseline_fr_preset.py`의 고정 전체 capture 대신 최근 1.0초의 서로 다른 fresh
+  `rt/lowstate` sample만 검사하는 sliding stable window를 추가했다. 기존 strict
+  `0.006rad` span gate는 완화하지 않으며 12초 안에 안정되지 않으면 fail-closed한다.
+- 통합 runner는 stable window 통과 뒤 0.5초 countdown으로 LowCmd child를 바로 연결하고,
+  frozen preset은 `time-scale=0.95`, FR thigh/calf swing delta는 허용 상한 `1.3`을 기본으로
+  쓴다. 검증된 `Kp=60`, `Kd=5`, handoff blend 및 trajectory 원본은 변경하지 않는다.
+- 고정 `camera→FR`은 gait/정지 자세에 따라 달라져 최종 kick 거리를 보장하지 못하므로,
+  read-only WebRTC probe가 공식 `SportModeState.foot_position_body[12]`와
+  `foot_speed_body[12]`를 네 XYZ triplet으로 기록하게 했다. firmware 배열 순서와 standing
+  FR 값을 확인하기 전에는 이를 leg 이름으로 추정하거나 automatic kick gate에 사용하지 않는다.
+- 실물 probe에서 위 WebRTC foot 배열이 모두 0으로 확인되어 이를 최종 거리 후보에서 제외했다.
+  기존 direct-DDS physical-remote watcher가 publisher 없이 `rt/lowstate`도 구독하고, Go2 URDF의
+  FR motor 0/1/2 및 0.213m thigh/calf chain으로 `fr_foot_kinematics` 위치·속도·sample age를
+  기록하도록 확장했다. 실물에서 sample 4457, age 0.0007s,
+  `foot_position_body_m=[0.185136,-0.127731,-0.307479]` 및 유한 속도가 확인되어
+  명시 `--use-direct-fr-kinematics` final-dock/kick gate에 연결했다.
+
+## 2026-07-29 — 명시적 AprilTag 없는 ball-only kick fallback
+
+- 기본 Tag 11/target-line fail-closed 동작은 유지하면서 `--allow-tagless-ball-kick` opt-in을
+  stage와 통합 runner에 추가했다. Tag가 보이면 기존 tag-guided 경로가 우선되고, 처음부터
+  Tag가 없을 때만 captured FR lane의 ball bearing으로 정렬한다.
+- tagless range는 D435i optical forward를 floor plane에 투영해 계산하며, 공 검출 freshness,
+  depth, LiDAR odometry, final dock/settle 및 physical-remote watchdog gate는 유지한다.
+- ball-only 결과는 `alignment_mode=ball_only`, `target_direction_verified=false`를 기록한다.
+  이는 FR 앞에 공을 놓는 fallback이지 공이 날아갈 target 방향 검증이 아니다.
+- 기존에 선언만 되고 action/strict gate에 반영되지 않던 runtime
+  `--ball-bearing-tolerance-rad`를 template tolerance와의 더 엄격한 최소값으로 연결했다.
+
 ## 2026-07-28 — ball→Tag heading 및 WebRTC self-echo fail-closed 보정
 
 - 실물 final dock에서 프로그램이 보낸 `ly=0.2` DDS echo가 physical remote로 오인되어
