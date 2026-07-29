@@ -362,6 +362,12 @@ floor에서 아래 command는 `lx=+0.20` pulse **1회**(최대 2.0초/횟변위 
 부호가 확인된 뒤에도 relative bearing이 0을 지나치면 관측된 lateral response 부호로
 다음 `lx` 방향을 자동 반전해 overshoot를 막는다.
 
+Tag 없는 ball-only 실물 로그에서 `ball_error=-0.0317rad`에 `rx=+0.2`를 보내자
+ball bearing이 `0.190→0.057→-0.393rad`로 악화됐다. 따라서 ball-only yaw는
+`observed-desired` 오차와 같은 `rx` 부호를 사용하며, gait 해상도보다 작은
+0.04rad 이하는 회전하지 않는다. 이 action deadband은 strict kick geometry gate를
+완화하지 않는다.
+
 ```bash
 python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
