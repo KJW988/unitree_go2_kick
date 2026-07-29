@@ -31,6 +31,18 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
   `foot_position_body_m=[0.185136,-0.127731,-0.307479]` 및 유한 속도가 확인되어
   명시 `--use-direct-fr-kinematics` final-dock/kick gate에 연결했다.
 
+## 2026-07-29 — LiDAR-bounded continuous lateral gait
+
+- `lx=0.20`, 0.80초 pulse를 6회 반복했지만 LiDAR 실측 횟이동은 0.00447m에
+  그친 실물 로그를 반영했다. lateral 상한을 2.0초로 늘리고, pulse 시작
+  yaw로 투영한 LiDAR odometry 횟변위가 bearing 오차에서 계산한 0.04–0.08m
+  목표에 도달했음을 새 sample 3개가 연속 확인하면 즉시 neutralize하게 했다.
+- 첫 lateral probe에서 관측한 `lx`→relative-bearing response 부호를 저장한다.
+  오차가 0을 지나치면 다음 게걸음 방향을 반전해 같은 방향으로 계속 밀는
+  overshoot를 막았다.
+- 통합 runner에 `--stage-lateral-pulse-s`(기본 2.0) 및
+  `--stage-max-lateral-pulse-travel-m`(기본 0.08)를 추가해 stage child에 명시 전달한다.
+
 ## 2026-07-29 — 명시적 AprilTag 없는 ball-only kick fallback
 
 - 기본 Tag 11/target-line fail-closed 동작은 유지하면서 `--allow-tagless-ball-kick` opt-in을
