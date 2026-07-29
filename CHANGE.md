@@ -42,6 +42,10 @@ Log of all changes made during the Go2 Kick RL debugging and implementation task
   overshoot를 막았다.
 - 통합 runner에 `--stage-lateral-pulse-s`(기본 2.0) 및
   `--stage-max-lateral-pulse-travel-m`(기본 0.08)를 추가해 stage child에 명시 전달한다.
+- Tag 없는 실물 실행에서 `rx=+0.2`가 ball bearing을 `0.190→0.057→-0.393rad`로
+  줄여 오차를 계속 키운 response를 반영했다. ball-only yaw command 부호를
+  `observed-desired` 오차와 같게 바꾸고, 0.04rad 이하의 실물 yaw-resolution 미만
+  오차는 회전 action을 억제했다. strict kick bearing gate는 유지한다.
 
 ## 2026-07-29 — 명시적 AprilTag 없는 ball-only kick fallback
 
