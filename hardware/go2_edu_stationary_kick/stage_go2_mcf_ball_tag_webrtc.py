@@ -67,11 +67,12 @@ BALL_RADIUS_M = 0.11
 FINAL_FR_TO_BALL_MIN_SURFACE_GAP_M = 0.10
 FINAL_FR_TO_BALL_TARGET_SURFACE_GAP_M = 0.15
 FINAL_FR_GAP_TOLERANCE_M = 0.02
-# 0.50 s도 이 실물에서 gait initiation 경계라 몸만 움찔하고 끝나는 실행이 있었다.
-# magnitude는 그대로 두고 yaw/lateral pulse 상한을 0.80 s로 둔다. odometry 목표를
-# 연속 확인하면 상한 전에 neutralize하므로 0.80 s open-loop 회전을 강제하지 않는다.
+# 0.80 s lateral pulse도 이 실물에서 gait initiation만 반복하고 실제 횟이동은
+# 4.5 mm에 그쳤다. magnitude는 그대로 두고 2.0 s 상한을 주되, LiDAR odometry가
+# 목표 횟변위를 연속 확인하면 상한 전에 neutralize한다.
 TURN_PULSE_S = 0.80
-LATERAL_PULSE_S = 0.80
+LATERAL_PULSE_S = 2.00
+MAX_LATERAL_PULSE_TRAVEL_M = 0.08
 MIN_ODOM_STOP_ACTIVE_S = 0.60
 ODOM_STOP_CONFIRM_SAMPLES = 3
 # camera staging까지 수 cm만 남으면 작은 pulse가 gait initiation을 반복한다. 이 구간은
@@ -366,6 +367,13 @@ def forward_progress_m(baseline: dict[str, float], pose: dict[str, float]) -> fl
     dx = pose["x"] - baseline["x"]
     dy = pose["y"] - baseline["y"]
     return dx * math.cos(baseline["yaw_rad"]) + dy * math.sin(baseline["yaw_rad"])
+
+
+def lateral_progress_m(baseline: dict[str, float], pose: dict[str, float]) -> float:
+    """pulse 시작 yaw로 투영한 signed LiDAR odometry 횟이동 거리다."""
+    dx = pose["x"] - baseline["x"]
+    dy = pose["y"] - baseline["y"]
+    return -dx * math.sin(baseline["yaw_rad"]) + dy * math.cos(baseline["yaw_rad"])
 
 
 def state_is_safe_to_walk(state: dict[str, Any] | None) -> tuple[bool, str]:
@@ -866,6 +874,7 @@ async def joystick_pulse(
     start_pose: dict[str, float] | None = None,
     stop_after_forward_m: float | None = None,
     stop_after_yaw_rad: float | None = None,
+    stop_after_lateral_m: float | None = None,
 ) -> tuple[int, int, str]:
     """partial burst도 neutralize한다. direct DDS remote input은 다음 packet 전에 stop한다."""
     packets = 0
@@ -876,6 +885,7 @@ async def joystick_pulse(
     pulse_started_at = time.monotonic()
     forward_confirmation_count = 0
     yaw_confirmation_count = 0
+    lateral_confirmation_count = 0
     arm_virtual_echo_window(
         args.virtual_echo_window, lx=lx, ly=ly, rx=rx, duration_s=VIRTUAL_ECHO_LEASE_S,
     )
@@ -891,7 +901,11 @@ async def joystick_pulse(
                     duration_s=VIRTUAL_ECHO_LEASE_S,
                 )
                 next_echo_refresh_at = now + VIRTUAL_ECHO_REFRESH_S
-            if stop_after_forward_m is not None or stop_after_yaw_rad is not None:
+            if (
+                stop_after_forward_m is not None
+                or stop_after_yaw_rad is not None
+                or stop_after_lateral_m is not None
+            ):
                 assert odom_poses is not None and start_pose is not None
                 if len(odom_poses) != last_pose_count:
                     last_pose_count = len(odom_poses)
@@ -928,6 +942,17 @@ async def joystick_pulse(
                         )
                         if yaw_confirmation_count >= args.odom_stop_confirm_samples:
                             termination = "yaw_odom_target_reached_confirmed"
+                            break
+                    if stop_after_lateral_m is not None:
+                        lateral_reached = (
+                            abs(lateral_progress_m(start_pose, odom_poses[-1]))
+                            >= stop_after_lateral_m
+                        )
+                        lateral_confirmation_count = (
+                            lateral_confirmation_count + 1 if lateral_reached else 0
+                        )
+                        if lateral_confirmation_count >= args.odom_stop_confirm_samples:
+                            termination = "lateral_odom_target_reached_confirmed"
                             break
             watchdog, watchdog_reason = load_direct_remote_watchdog(
                 args.direct_remote_status,
@@ -1130,6 +1155,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "final_dock_max_duration_s": args.final_dock_max_duration_s,
                 "turn_pulse_s": args.turn_pulse_s,
                 "lateral_pulse_s": args.lateral_pulse_s,
+                "max_lateral_pulse_travel_m": args.max_lateral_pulse_travel_m,
                 "lateral_search_opt_in": args.allow_lateral_search,
                 "initial_lateral_sign": args.lateral_sign,
                 "lateral_sign_preconfirmed": args.lateral_sign_confirmed,
@@ -1161,6 +1187,15 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         # mount/firmware 환경마다 확정할 수 없다. 첫 짧은 probe만 관측해 sign을 정한다.
         lateral_sign = args.lateral_sign
         lateral_sign_confirmed = args.lateral_sign_confirmed
+        lateral_response_sign: float | None = None
+        if lateral_sign_confirmed and use_tag_guidance:
+            initial_relative_error = fr_lane_bearing_errors(
+                perception, lane_template, args.lane_axis_bearing_rad,
+            )["relative_error_rad"]
+            lateral_response_sign = (
+                -math.copysign(1.0, initial_relative_error)
+                * math.copysign(1.0, lateral_sign)
+            )
         lateral_probe_attempts = 0
         pending_lateral_probe: dict[str, Any] | None = None
         result["lateral_probe_results"] = []
@@ -1241,9 +1276,20 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "improvement_rad": improvement,
                 }
                 if improvement >= args.lateral_min_improvement_rad:
-                    lateral_sign = pending_lateral_probe["sign"]
+                    signed_change = angle_distance(
+                        after_errors["relative_error_rad"],
+                        pending_lateral_probe["before_relative_error_rad"],
+                    )
+                    lateral_response_sign = math.copysign(
+                        1.0, signed_change * pending_lateral_probe["sign"],
+                    )
+                    lateral_sign = (
+                        -math.copysign(1.0, after_errors["relative_error_rad"])
+                        * lateral_response_sign
+                    )
                     lateral_sign_confirmed = True
                     probe_result["verdict"] = "sign_confirmed"
+                    probe_result["lateral_response_sign"] = lateral_response_sign
                 elif lateral_probe_attempts >= args.max_lateral_probe_attempts:
                     probe_result["verdict"] = "no_convergence"
                     result["lateral_probe_results"].append(probe_result)
@@ -1268,8 +1314,18 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if travel_m >= args.max_travel_m:
                 result["verdict"] = "TRAVEL_LIMIT_REACHED"
                 break
+            action_lateral_sign = lateral_sign
+            if lateral_response_sign is not None and use_tag_guidance:
+                current_relative_error = fr_lane_bearing_errors(
+                    perception, lane_template, args.lane_axis_bearing_rad,
+                )["relative_error_rad"]
+                action_lateral_sign = (
+                    -math.copysign(1.0, current_relative_error)
+                    * lateral_response_sign
+                )
+                lateral_sign = action_lateral_sign
             reason, lx, ly, rx = action_for(
-                perception, args, lane_template, lateral_sign, use_tag_guidance,
+                perception, args, lane_template, action_lateral_sign, use_tag_guidance,
             )
             cycle: dict[str, Any] = {
                 "index": cycle_index,
@@ -1477,6 +1533,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                             perception, lane_template, args.lane_axis_bearing_rad,
                         )["relative_error_rad"],
                     ),
+                    "before_relative_error_rad": fr_lane_bearing_errors(
+                        perception, lane_template, args.lane_axis_bearing_rad,
+                    )["relative_error_rad"],
                     "before_fr_lane_bearing_errors": fr_lane_bearing_errors(
                         perception, lane_template, args.lane_axis_bearing_rad,
                     ),
@@ -1488,6 +1547,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             stop_after_forward_m = None
             stop_after_yaw_rad = None
+            stop_after_lateral_m = None
             if reason == "forward":
                 remaining_to_stage_m = max(
                     0.0,
@@ -1511,12 +1571,25 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     0.20,
                 )
                 cycle["yaw_odom_target_rad"] = stop_after_yaw_rad
+            elif reason == "lateral_to_fr_lane":
+                # small-angle ground approximation: lateral ~= range * bearing error.
+                # 8 cm hard cap으로 게걸음 overshoot를 막고 다음 cycle에서 재관측한다.
+                stop_after_lateral_m = min(
+                    args.max_lateral_pulse_travel_m,
+                    max(
+                        0.04,
+                        perception.ball_ground_range_m
+                        * abs(cycle["fr_lane_bearing_errors"]["relative_error_rad"]),
+                    ),
+                )
+                cycle["lateral_odom_target_m"] = stop_after_lateral_m
             sent, neutral, pulse_result = await joystick_pulse(
                 pub_sub, RTC_TOPIC["WIRELESS_CONTROLLER"], lx=lx, ly=ly, rx=rx,
                 duration_s=duration_s, direct_latch=direct_latch, args=args,
                 odom_poses=odom_poses, start_pose=latest_pose,
                 stop_after_forward_m=stop_after_forward_m,
                 stop_after_yaw_rad=stop_after_yaw_rad,
+                stop_after_lateral_m=stop_after_lateral_m,
             )
             command_packets += sent
             neutral_packets += neutral
@@ -1706,6 +1779,11 @@ def main() -> int:
         help="lateral pulse 1회와 재관측 1회만 수행한 뒤 추가 보행 없이 neutral로 끝낸다",
     )
     parser.add_argument("--lateral-pulse-s", type=float, default=LATERAL_PULSE_S)
+    parser.add_argument(
+        "--max-lateral-pulse-travel-m", type=float,
+        default=MAX_LATERAL_PULSE_TRAVEL_M,
+        help="continuous lateral pulse를 즉시 neutralize할 LiDAR odometry 횟변위 상한",
+    )
     parser.add_argument("--lateral-min-improvement-rad", type=float, default=LATERAL_MIN_IMPROVEMENT_RAD)
     parser.add_argument("--max-lateral-probe-attempts", type=int, default=MAX_LATERAL_PROBE_ATTEMPTS)
     parser.add_argument("--reobserve-settle-s", type=float, default=REOBSERVE_SETTLE_S)
@@ -1737,6 +1815,10 @@ def main() -> int:
         parser.error("max-forward-pulse-travel-m은 [0.03, 0.15] 범위여야 합니다")
     if not 0.50 <= args.forward_pulse_s <= 2.0:
         parser.error("forward-pulse-s는 [0.50, 2.0] 범위여야 합니다")
+    if not 0.50 <= args.lateral_pulse_s <= 2.0:
+        parser.error("lateral-pulse-s는 [0.50, 2.0] 범위여야 합니다")
+    if not 0.03 <= args.max_lateral_pulse_travel_m <= 0.12:
+        parser.error("max-lateral-pulse-travel-m은 [0.03, 0.12] 범위여야 합니다")
     if not 0.20 <= args.min_odom_stop_active_s <= 1.0:
         parser.error("--min-odom-stop-active-s는 [0.20, 1.0] 범위여야 합니다")
     if not 2 <= args.odom_stop_confirm_samples <= 10:
@@ -1801,6 +1883,7 @@ def main() -> int:
         args.max_odom_stale_s, args.direct_remote_max_age_s, args.direct_remote_hold_s,
         args.ball_detection_max_age_s,
         args.max_forward_pulse_travel_m,
+        args.max_lateral_pulse_travel_m,
     ) <= 0.0 or not 1 <= args.direct_remote_udp_port <= 65535:
         parser.error("pulse/settle/travel/stale/direct-remote 값은 양수 범위여야 합니다")
 
