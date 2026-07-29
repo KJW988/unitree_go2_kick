@@ -73,6 +73,10 @@ FINAL_FR_GAP_TOLERANCE_M = 0.02
 TURN_PULSE_S = 0.80
 LATERAL_PULSE_S = 2.00
 MAX_LATERAL_PULSE_TRAVEL_M = 0.08
+# ball-only 실물에서 0.0317 rad 오차는 0.8 s yaw gait의 최소 해상도보다 작아
+# 회전이 오히려 공을 FOV 밖으로 밀었다. strict kick gate는 그대로 두고
+# high-level yaw action만 0.04 rad 이하에서 억제한다.
+BALL_ONLY_YAW_ACTION_TOLERANCE_RAD = 0.04
 MIN_ODOM_STOP_ACTIVE_S = 0.60
 ODOM_STOP_CONFIRM_SAMPLES = 3
 # camera staging까지 수 cm만 남으면 작은 pulse가 gait initiation을 반복한다. 이 구간은
@@ -563,10 +567,15 @@ def action_for(
         ball_tolerance = min(
             lane.ball_bearing_tolerance_rad, args.ball_bearing_tolerance_rad,
         )
-        if abs(errors["ball_error_rad"]) > ball_tolerance:
+        ball_action_tolerance = max(
+            ball_tolerance, BALL_ONLY_YAW_ACTION_TOLERANCE_RAD,
+        )
+        if abs(errors["ball_error_rad"]) > ball_action_tolerance:
+            # 2026-07-29 실물 response: +rx는 camera ball bearing을 감소시켰다.
+            # error=(observed-desired)와 같은 rx 부호를 보내야 오차가 0으로 줄어든다.
             return (
                 "turn_to_ball_lane", 0.0, 0.0,
-                -math.copysign(args.joystick_magnitude, errors["ball_error_rad"]),
+                math.copysign(args.joystick_magnitude, errors["ball_error_rad"]),
             )
         if perception.ball_range_m < lane.desired_ball_range_m - lane.range_tolerance_m:
             return "ball_too_close_no_reverse", 0.0, 0.0, 0.0
@@ -1133,6 +1142,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "lane_axis_bearing_rad": args.lane_axis_bearing_rad,
                 "target_bearing_tolerance_rad": args.target_bearing_tolerance_rad,
                 "ball_bearing_tolerance_rad": args.ball_bearing_tolerance_rad,
+                "ball_only_yaw_action_tolerance_rad": (
+                    BALL_ONLY_YAW_ACTION_TOLERANCE_RAD
+                ),
                 "tagless_ball_kick_opt_in": args.allow_tagless_ball_kick,
                 "forward_pulse_s": args.forward_pulse_s,
                 "max_forward_pulse_travel_m": args.max_forward_pulse_travel_m,
