@@ -10,6 +10,8 @@ MCF로의 자동 handback은 수행하지 않는다. kick child가 ``--kick-hold
 종료하면 LowCmd stream도 끝나므로, 이후 자세/ownership 복구는 operator가 책임진다.
 ``--allow-rough-kick``은 strict FR template 오차가 남은 camera staging에서도 kick child를
 호출하는 명시적 opt-in이며, target hit을 보장하지 않는다.
+``--allow-tagless-ball-kick``은 Tag가 처음부터 없을 때만 ball-only FR bearing fallback을
+명시 arm하며, 이 경우 kick 방향은 검증되지 않는다.
 """
 from __future__ import annotations
 
@@ -28,6 +30,9 @@ ROOT = Path(__file__).resolve().parents[2]
 STAGE_SCRIPT = Path(__file__).with_name("stage_go2_mcf_ball_tag_webrtc.py")
 HARNESS_SCRIPT = Path(__file__).with_name("live_baseline_fr_preset.py")
 CONFIRMATION = "ROUGH_STAGE_THEN_FR_KICK_ESTOP_READY"
+# 2026-07-29 실물 동시 측정: FR body x=0.185136m, D435i lens가 FR보다
+# robot-forward 0.15m 앞. 따라서 고정 mount lens body x=0.335136m로 보정한다.
+DEFAULT_CAMERA_BODY_FORWARD_M = 0.335136277245694
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -52,6 +57,7 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--observation-timeout-s", str(args.stage_observation_timeout_s),
         "--lane-axis-bearing-rad", str(args.lane_axis_bearing_rad),
         "--target-bearing-tolerance-rad", str(args.stage_target_bearing_tolerance_rad),
+        "--ball-bearing-tolerance-rad", str(args.stage_ball_bearing_tolerance_rad),
         "--min-odom-stop-active-s", str(args.stage_min_odom_stop_active_s),
         "--odom-stop-confirm-samples", str(args.stage_odom_stop_confirm_samples),
         "--camera-stage-entry-slack-m", str(args.stage_camera_entry_slack_m),
@@ -60,6 +66,14 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--forward-pulse-s", str(args.stage_forward_pulse_s),
         "--max-forward-pulse-travel-m", str(args.stage_max_forward_pulse_travel_m),
         "--enable-final-dock",
+        "--use-direct-fr-kinematics",
+        "--camera-body-forward-m", str(args.camera_body_forward_m),
+        "--fr-kinematics-max-age-s", str(args.fr_kinematics_max_age_s),
+        "--ball-radius-m", str(args.ball_radius_m),
+        "--final-fr-to-ball-min-surface-gap-m", str(args.final_fr_to_ball_min_surface_gap_m),
+        "--final-fr-to-ball-target-surface-gap-m", str(args.final_fr_to_ball_target_surface_gap_m),
+        "--final-fr-gap-tolerance-m", str(args.final_fr_gap_tolerance_m),
+        "--final-fr-max-foot-speed-m-s", str(args.final_fr_max_foot_speed_m_s),
         "--camera-to-fr-forward-m", str(args.camera_to_fr_forward_m),
         "--fr-to-ball-forward-m", str(args.fr_to_ball_forward_m),
         "--final-dock-max-m", str(args.final_dock_max_m),
@@ -70,6 +84,8 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--max-travel-m", str(args.max_stage_travel_m),
         "--output", str(output),
     ]
+    if args.allow_tagless_ball_kick:
+        command.append("--allow-tagless-ball-kick")
     if args.execute:
         command.extend(["--execute", "--operator-confirm", "MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY"])
     return command
@@ -89,6 +105,9 @@ def harness_command(args: argparse.Namespace) -> list[str]:
         "--prehold-s", str(args.prehold_s),
         "--preset-time-scale", str(args.preset_time_scale),
         "--fr-swing-scale", str(args.fr_swing_scale),
+        "--baseline-stable-window-s", str(args.kick_baseline_stable_window_s),
+        "--baseline-stable-timeout-s", str(args.kick_baseline_stable_timeout_s),
+        "--start-countdown-s", str(args.kick_start_countdown_s),
         "--hold-after-s", str(args.kick_hold_after_s),
         "--operator-confirm", "HARNESS_ESTOP_READY",
     ]
@@ -105,23 +124,53 @@ def main() -> int:
         "--stage-observation-timeout-s", type=float, default=5.0,
         help="각 staging 관측에서 intermittent detector miss를 기다리는 bounded 시간",
     )
-    parser.add_argument("--max-stage-cycles", type=int, default=5)
+    parser.add_argument("--max-stage-cycles", type=int, default=6)
     parser.add_argument("--max-stage-travel-m", type=float, default=0.35)
     parser.add_argument("--stage-forward-pulse-s", type=float, default=2.0)
-    parser.add_argument("--stage-max-forward-pulse-travel-m", type=float, default=0.12)
+    parser.add_argument("--stage-max-forward-pulse-travel-m", type=float, default=0.15)
     parser.add_argument(
         "--lane-axis-bearing-rad", type=float, default=0.0,
         help="body/FR과 평행하게 맞출 ball→Tag 지면축의 camera bearing",
     )
-    parser.add_argument("--stage-target-bearing-tolerance-rad", type=float, default=0.03)
+    parser.add_argument(
+        "--stage-target-bearing-tolerance-rad", type=float, default=0.04,
+        help="실물 yaw gait 해상도보다 작은 회전 반복을 막는 target-ray deadband",
+    )
+    parser.add_argument("--stage-ball-bearing-tolerance-rad", type=float, default=0.03)
+    parser.add_argument(
+        "--allow-tagless-ball-kick", action="store_true",
+        help=(
+            "Tag가 없을 때 D435i ball bearing/depth와 captured FR lane만으로 접근·kick을 "
+            "명시 허용한다. target 방향은 검증되지 않는다"
+        ),
+    )
     parser.add_argument("--stage-min-odom-stop-active-s", type=float, default=0.60)
     parser.add_argument("--stage-odom-stop-confirm-samples", type=int, default=3)
     parser.add_argument("--stage-camera-entry-slack-m", type=float, default=0.04)
     parser.add_argument("--camera-to-fr-forward-m", type=float, required=True)
     parser.add_argument("--fr-to-ball-forward-m", type=float, required=True)
+    parser.add_argument(
+        "--camera-body-forward-m", type=float, default=DEFAULT_CAMERA_BODY_FORWARD_M,
+        help="실측된 robot body origin→D435i lens forward 고정값",
+    )
+    parser.add_argument("--fr-kinematics-max-age-s", type=float, default=0.15)
+    parser.add_argument("--ball-radius-m", type=float, default=0.11)
+    parser.add_argument(
+        "--final-fr-to-ball-min-surface-gap-m", type=float, default=0.10,
+        help="kick 전 FR toe→공 표면 hard minimum",
+    )
+    parser.add_argument(
+        "--final-fr-to-ball-target-surface-gap-m", type=float, default=0.15,
+        help="kick 전 FR toe→공 표면 목표",
+    )
+    parser.add_argument("--final-fr-gap-tolerance-m", type=float, default=0.02)
+    parser.add_argument("--final-fr-max-foot-speed-m-s", type=float, default=0.05)
     parser.add_argument("--final-dock-max-m", type=float, default=0.85)
     parser.add_argument("--final-dock-max-duration-s", type=float, default=6.0)
-    parser.add_argument("--final-gait-to-kick-clearance-m", type=float, default=0.11)
+    parser.add_argument(
+        "--final-gait-to-kick-clearance-m", type=float, default=0.11,
+        help="마지막 gait 발걸음이 공을 치지 않고 강화 FR kick에 넘길 전방 여유",
+    )
     parser.add_argument("--final-settle-timeout-s", type=float, default=2.0)
     parser.add_argument("--interface", default="eth0")
     parser.add_argument("--lowcmd-python", type=Path, required=True)
@@ -130,8 +179,17 @@ def main() -> int:
     parser.add_argument("--kd", type=float, required=True)
     parser.add_argument("--handoff-blend-s", type=float, default=1.2)
     parser.add_argument("--prehold-s", type=float, default=1.0)
-    parser.add_argument("--preset-time-scale", type=float, default=1.0)
-    parser.add_argument("--fr-swing-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--preset-time-scale", type=float, default=0.95,
+        help="통합 kick preset 재생 시간 배율; 0.95는 검증 trajectory를 0.95배 시간에 재생",
+    )
+    parser.add_argument(
+        "--fr-swing-scale", type=float, default=1.3,
+        help="kick phase FR thigh/calf delta 배율; 통합 기본은 허용 상한 1.3",
+    )
+    parser.add_argument("--kick-baseline-stable-window-s", type=float, default=1.0)
+    parser.add_argument("--kick-baseline-stable-timeout-s", type=float, default=12.0)
+    parser.add_argument("--kick-start-countdown-s", type=float, default=0.5)
     parser.add_argument(
         "--kick-hold-after-s", type=float, default=None,
         help="kick 뒤 full-gain baseline LowCmd hold 시간. execute에서는 0보다 커야 한다",
@@ -159,6 +217,8 @@ def main() -> int:
         parser.error("--lane-axis-bearing-rad는 finite [-0.35, 0.35] 범위여야 합니다")
     if not 0.01 <= args.stage_target_bearing_tolerance_rad <= 0.20:
         parser.error("--stage-target-bearing-tolerance-rad는 [0.01, 0.20] 범위여야 합니다")
+    if not 0.01 <= args.stage_ball_bearing_tolerance_rad <= 0.20:
+        parser.error("--stage-ball-bearing-tolerance-rad는 [0.01, 0.20] 범위여야 합니다")
     if not 0.20 <= args.stage_min_odom_stop_active_s <= 1.0:
         parser.error("--stage-min-odom-stop-active-s는 [0.20, 1.0] 범위여야 합니다")
     if not 2 <= args.stage_odom_stop_confirm_samples <= 10:
@@ -170,6 +230,22 @@ def main() -> int:
         and 0.0 < args.fr_to_ball_forward_m <= 0.40
     ):
         parser.error("camera-to-FR은 signed [-0.40,0.40], FR-to-ball은 (0,0.40]이어야 합니다")
+    if not 0.10 <= args.camera_body_forward_m <= 0.55:
+        parser.error("--camera-body-forward-m은 [0.10, 0.55] 범위여야 합니다")
+    if not 0.02 <= args.fr_kinematics_max_age_s <= 0.35:
+        parser.error("--fr-kinematics-max-age-s는 [0.02, 0.35] 범위여야 합니다")
+    if not 0.08 <= args.ball_radius_m <= 0.14:
+        parser.error("--ball-radius-m은 [0.08, 0.14] 범위여야 합니다")
+    if not (
+        0.05 <= args.final_fr_to_ball_min_surface_gap_m <= 0.20
+        and args.final_fr_to_ball_min_surface_gap_m
+        <= args.final_fr_to_ball_target_surface_gap_m <= 0.25
+    ):
+        parser.error("FR→공 표면 최소/목표 gap 범위가 유효하지 않습니다")
+    if not 0.0 <= args.final_fr_gap_tolerance_m <= 0.05:
+        parser.error("--final-fr-gap-tolerance-m은 [0.0, 0.05] 범위여야 합니다")
+    if not 0.01 <= args.final_fr_max_foot_speed_m_s <= 0.15:
+        parser.error("--final-fr-max-foot-speed-m-s는 [0.01, 0.15] 범위여야 합니다")
     if not 0.05 <= args.final_dock_max_m <= 0.85:
         parser.error("--final-dock-max-m은 [0.05, 0.85] 범위여야 합니다")
     if not 1.0 <= args.final_dock_max_duration_s <= 6.0:
@@ -178,6 +254,16 @@ def main() -> int:
         parser.error("--final-gait-to-kick-clearance-m은 [0.05, 0.15] 범위여야 합니다")
     if not 1.0 <= args.final_settle_timeout_s <= 3.0:
         parser.error("--final-settle-timeout-s는 [1.0, 3.0] 범위여야 합니다")
+    if not 0.5 <= args.kick_baseline_stable_window_s <= 3.0:
+        parser.error("--kick-baseline-stable-window-s는 [0.5, 3.0] 범위여야 합니다")
+    if not 2.0 <= args.kick_baseline_stable_timeout_s <= 30.0:
+        parser.error("--kick-baseline-stable-timeout-s는 [2.0, 30.0] 범위여야 합니다")
+    if not 0.0 <= args.kick_start_countdown_s <= 5.0:
+        parser.error("--kick-start-countdown-s는 [0.0, 5.0] 범위여야 합니다")
+    if not 0.2 <= args.preset_time_scale <= 2.0:
+        parser.error("--preset-time-scale은 [0.2, 2.0] 범위여야 합니다")
+    if not 0.8 <= args.fr_swing_scale <= 1.3:
+        parser.error("--fr-swing-scale은 [0.8, 1.3] 범위여야 합니다")
     if args.execute and (args.kick_hold_after_s is None or args.kick_hold_after_s <= 0.0):
         parser.error("--execute에는 양수 --kick-hold-after-s가 필요합니다")
     if not args.lowcmd_python.is_file() or not args.trajectory.is_file():
@@ -196,6 +282,7 @@ def main() -> int:
         "automatic_mcf_handback": False,
         "execute": args.execute,
         "stage_output": str(stage_output),
+        "tagless_ball_kick_opt_in": args.allow_tagless_ball_kick,
     }
     try:
         command = stage_command(args, stage_output)
