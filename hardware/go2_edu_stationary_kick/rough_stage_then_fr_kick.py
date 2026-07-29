@@ -65,6 +65,8 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--allow-lateral-search",
         "--forward-pulse-s", str(args.stage_forward_pulse_s),
         "--max-forward-pulse-travel-m", str(args.stage_max_forward_pulse_travel_m),
+        "--lateral-pulse-s", str(args.stage_lateral_pulse_s),
+        "--max-lateral-pulse-travel-m", str(args.stage_max_lateral_pulse_travel_m),
         "--enable-final-dock",
         "--use-direct-fr-kinematics",
         "--camera-body-forward-m", str(args.camera_body_forward_m),
@@ -128,6 +130,8 @@ def main() -> int:
     parser.add_argument("--max-stage-travel-m", type=float, default=0.35)
     parser.add_argument("--stage-forward-pulse-s", type=float, default=2.0)
     parser.add_argument("--stage-max-forward-pulse-travel-m", type=float, default=0.15)
+    parser.add_argument("--stage-lateral-pulse-s", type=float, default=2.0)
+    parser.add_argument("--stage-max-lateral-pulse-travel-m", type=float, default=0.08)
     parser.add_argument(
         "--lane-axis-bearing-rad", type=float, default=0.0,
         help="body/FR과 평행하게 맞출 ball→Tag 지면축의 camera bearing",
@@ -213,6 +217,10 @@ def main() -> int:
         parser.error("--stage-forward-pulse-s는 [0.50, 2.0] 범위여야 합니다")
     if not 0.03 <= args.stage_max_forward_pulse_travel_m <= 0.15:
         parser.error("--stage-max-forward-pulse-travel-m은 [0.03, 0.15] 범위여야 합니다")
+    if not 0.50 <= args.stage_lateral_pulse_s <= 2.0:
+        parser.error("--stage-lateral-pulse-s는 [0.50, 2.0] 범위여야 합니다")
+    if not 0.03 <= args.stage_max_lateral_pulse_travel_m <= 0.12:
+        parser.error("--stage-max-lateral-pulse-travel-m은 [0.03, 0.12] 범위여야 합니다")
     if not math.isfinite(args.lane_axis_bearing_rad) or abs(args.lane_axis_bearing_rad) > 0.35:
         parser.error("--lane-axis-bearing-rad는 finite [-0.35, 0.35] 범위여야 합니다")
     if not 0.01 <= args.stage_target_bearing_tolerance_rad <= 0.20:
