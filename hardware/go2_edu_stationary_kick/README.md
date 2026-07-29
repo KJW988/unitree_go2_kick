@@ -57,7 +57,7 @@ python hardware/go2_edu_stationary_kick/capture_d435i_rgbd.py --duration-s 10
 
 ## D435i YOLO 공 검출 + browser stream
 
-공은 LiDAR 단독 검출 대상으로 삼지 않는다. 먼저 D435i RGB의 공식 YOLOv5n COCO
+공은 LiDAR 단독 검출 대상으로 삼지 않는다. 먼저 D435i RGB의 공식 YOLO11n COCO
 `sports ball` 후보를 얻고, 같은 D435i의 color-aligned depth로 bbox 내부의 metric
 range를 확인한다. 따라서 이 단계는 RGB+depth 결합이며, camera-to-base extrinsic과
 timestamp 정합 전에는 LiDAR 점군을 공 위치에 거짓으로 결합하지 않는다. LiDAR는 이후
@@ -67,10 +67,10 @@ timestamp 정합 전에는 LiDAR 점군을 공 위치에 거짓으로 결합하�
 받는다. 다음 두 명령 모두 D435i를 읽기만 하며 Go2 motion/DDS를 전혀 사용하지 않는다.
 
 ```bash
-python hardware/go2_edu_stationary_kick/fetch_yolov5n_model.py
+python hardware/go2_edu_stationary_kick/fetch_yolo11n_model.py
 
 python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
-  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 \
+  --model hardware_models/yolo11n-v8.3.0.onnx --host 0.0.0.0 --port 8080 \
   --confidence 0.015 --detection-hold-s 0.50
 ```
 
@@ -138,12 +138,18 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-perception-py38
 unset PYTHONPATH
 python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
-  --model hardware_models/yolov5n-v7.0.onnx --host 0.0.0.0 --port 8080 --confidence 0.015
+  --model hardware_models/yolo11n-v8.3.0.onnx --host 0.0.0.0 --port 8080 \
+  --confidence 0.015 --detection-hold-s 0.50
 ```
 
 이 firmware에서 WebRTC data-channel 구독은 physical remote input을 되돌려 주지 않는다.
 따라서 virtual joystick 보행과 별개로, SDK environment의 direct DDS watcher를 먼저 유지한다.
-watcher는 publisher를 만들지 않는다. `READY` 뒤 empty floor/E-stop 상태에서 physical remote
+watcher는 publisher를 만들지 않는다. 같은 read-only process가 `rt/lowstate`의 FR
+motor `0/1/2`를 구독하고 Go2 URDF chain으로 `fr_foot_kinematics`를 상태 JSON에 기록한다.
+이 firmware의 WebRTC `SportModeState.foot_position_body`는 12개 모두 0이어서 FR 거리 계산에
+사용하지 않는다. direct DDS 결과의 `valid=true`, 증가하는 `sample_count`, 작은 `age_s`,
+물리적으로 타당한 `foot_position_body_m`가 실물에서 확인되기 전에는 automatic final kick
+distance gate에 연결하지 않는다. `READY` 뒤 empty floor/E-stop 상태에서 physical remote
 stick을 잠깐 입력해 `physical_input_event_count`를 1 이상으로 만들고, 실행 전에는 stick을
 중립으로 돌린 뒤 0.6초 이상 기다린다.
 
@@ -164,6 +170,16 @@ conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-unitree-sdk-py311
 unset PYTHONPATH
 python hardware/go2_edu_stationary_kick/watch_go2_physical_remote_dds.py \
   --interface eth0
+```
+
+다른 terminal에서 다음 read-only 확인으로 FR FK가 fresh한지 본다.
+
+```bash
+python - <<'PY'
+import json
+p = json.load(open("hardware_measurements/go2_direct_remote_watchdog.json"))
+print(json.dumps(p["fr_foot_kinematics"], indent=2))
+PY
 ```
 
 watcher는 별도 terminal에서 계속 유지한다. 다른 WebRTC MCF terminal에서 아래 dry-run이
@@ -204,22 +220,21 @@ yaw/lateral pulse 상한은 gait initiation 여유를 위해 0.80초다. camera-
 LiDAR-odometry bounded final dock으로 넘긴다. joystick magnitude 0.20과 전체 travel/duration
 hard limit은 그대로다.
 
-통합 runner는 camera staging 뒤 `--camera-to-fr-forward-m`과
-`--fr-to-ball-forward-m`의 실측 signed-forward 합을 최종 camera-ground→ball-center 목표로
-사용한다. D435i floor plane의 ball→Tag 축에 현재 ball ground 위치를 투영하고 그 차이만
-WebRTC joystick으로 최대 5초/0.85m 동안 보내며, LiDAR odometry가 목표를 확인해야만
-`FINAL_DOCKING_READY`가 된다. 그 결과가 아니면 LowCmd child를 시작하지 않는다.
-camera ground projection→FR은 robot 전방을 `+`, 뒤쪽을 `-`로 넣고 FR→ball center는
-전방 양수로 넣는다. 예를 들어 head lens가 FR보다 0.15m 앞이면 camera→FR은 `-0.15`,
-FR→ball은 `+0.15`다.
+통합 runner는 고정 `camera→FR` 거리 대신 direct DDS `rt/lowstate`+Go2 URDF FK로
+현재 FR foot body x를 매번 다시 읽는다. D435i mount는 body에 고정되므로, 동시
+실측한 `FR body x=0.185136m` 와 렌즈가 FR보다 0.15m 앞이라는 값에서
+`camera body x=0.335136m`를 1회 보정했다. 5호 공 반지름 0.11m를 따로 반영해
+`FR toe→공 표면 0.15m`, 즉 `FR→공 중심 0.26m`를 final dock 목표로 쓴다.
+정지 뒤 fresh FK로 다시 계산한 표면 gap이 0.10–0.17m이고 FR foot speed가
+0.05m/s 이하인 경우에만 `FINAL_DOCKING_READY`가 된다. 실패하면 LowCmd child를
+시작하지 않는다.
 
-실물 최종 dock에서 FR→ball 약 0.20m까지 gait를 유지하자 마지막 FR swing이 LowCmd보다
-먼저 공을 접촉했다. 첫 contact-safe 보정 실행은 5초 상한에서 목표보다 0.0645m 일찍
-종료해 FR→ball 약 0.3245m가 됐고, 1.2x FR kick은 공을 약하게 접촉했다. operator가 약
-0.03m 추가 접근을 확인했으므로 `--final-gait-to-kick-clearance-m` 기본을 0.11m로 둔다.
-`camera→FR=-0.15`, nominal `FR→ball=+0.18`이면 보행 종료 목표는 camera→ball `+0.14m`,
-FR→ball `+0.29m`다. 같은 실측 속도에서 이 목표까지 약 5.25초가 필요하므로 duration hard
-limit은 6.0초로 늘리되 LiDAR odometry 목표 도달 즉시 neutralize한다.
+실물 최종 dock에서 FR→공 중심 약 0.20m까지 gait를 유지하자 마지막 FR swing이
+LowCmd보다 먼저 공을 접촉했다. 따라서 동적 FK 목표는 중심 0.26m(표면 gap 0.15m)로
+두어 기존 접촉점보다 0.06m 보수적으로 멈춘다. 이것은 이전 약한 접촉 지점
+0.29m보다는 0.03m 가깝다. duration hard limit은 6.0초로 유지하되 LiDAR odometry
+목표 도달 즉시 neutralize한다.
+duration hard limit은 6.0초로 유지하되 LiDAR odometry 목표 도달 즉시 neutralize한다.
 neutral 뒤에는 최근 0.40초의 MCF planar/yaw velocity와 LiDAR odometry span이 모두 정지
 gate를 통과해야만 LowCmd child를 시작한다. 이 clearance는 첫 보수값이며 실물 접촉/미접촉
 결과로만 줄인다.
@@ -231,13 +246,66 @@ gate를 통과해야만 LowCmd child를 시작한다. 이 clearance는 첫 보�
 
 통합 runner의 기본 `--lane-axis-bearing-rad 0.0`은 D435i가 robot 전진축과 평행하게
 장착됐다는 현장 조건에서 ball→Tag 지면축을 body/FR 전진축과 평행하게 만든다. captured
-template의 range와 ball-Tag 상대 bearing은 그대로 사용한다. heading deadband는 0.03rad이며,
-yaw command는 LiDAR odometry가 요청 yaw 변화량을 확인하면 pulse 상한 전에 neutralize한다.
+template의 range와 ball-Tag 상대 bearing은 그대로 사용한다. 통합 runner의 heading deadband는
+0.04rad이며, yaw command는 LiDAR odometry가 요청 yaw 변화량을 확인하면 pulse 상한 전에
+neutralize한다.
 카메라 yaw가 body와 평행하지 않다면 0.0을 임의로 쓰지 말고 mount yaw를 실측해 이 값을
 바꿔야 한다.
 
 ```bash
 python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py --help
+```
+
+통합 runner는 전진 pulse를 최대 0.15m까지 유지해 짧은 neutral 반복을 줄이고, 마지막
+continuous final dock이 끝나면 최근 1.0초의 **새로운** `rt/lowstate` sample만 사용해 기존
+`0.006rad` joint-span gate를 통과할 때 바로 LowCmd로 전환한다. 고정 4초 capture 전체에 gait
+transient를 섞던 동작은 제거했다. 통합 기본은 추가 countdown 0.5초, frozen trajectory
+`time-scale=0.95`, FR swing delta `1.3`이며 `Kp=60`, `Kd=5`, handoff blend는 바꾸지 않는다.
+즉 작은 회전을 억지로 반복하지 않고 실제 보행을 완료한 뒤, 정지 확인과 토크 연속성을
+보존한 상태에서 강화 kick을 한 번 실행한다.
+
+세 terminal의 perception stream과 direct remote watcher가 정상인 상태에서 통합 실행은
+아래 한 명령이다. Tag 11이 보이면 tag-guided 정렬을 우선하고, Tag가 처음부터 없을 때만
+명시된 ball-only fallback을 쓴다. `--allow-rough-kick`은 포함하지 않으므로 strict geometry나
+final dock/settle 중 하나라도 실패하면 LowCmd는 시작되지 않는다.
+
+```bash
+template=hardware_measurements/d435i_fr_ball_tag_camera_stage_template_20260728T042707Z.json
+status=hardware_measurements/go2_direct_remote_watchdog.json
+trajectory=hardware_measurements/go2_fr_kick_teacher_x10.npz
+
+python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py \
+  --robot-ip 192.168.123.161 --tag-id 11 \
+  --fr-lane-template "$template" --direct-remote-status "$status" \
+  --allow-tagless-ball-kick \
+  --lane-axis-bearing-rad 0.0 \
+  --stage-target-bearing-tolerance-rad 0.04 \
+  --stage-ball-bearing-tolerance-rad 0.03 \
+  --stage-min-odom-stop-active-s 0.60 \
+  --stage-odom-stop-confirm-samples 3 \
+  --stage-camera-entry-slack-m 0.04 \
+  --stage-forward-pulse-s 2.0 \
+  --stage-max-forward-pulse-travel-m 0.15 \
+  --camera-to-fr-forward-m -0.15 --fr-to-ball-forward-m 0.18 \
+  --camera-body-forward-m 0.335136277245694 \
+  --ball-radius-m 0.11 \
+  --final-fr-to-ball-min-surface-gap-m 0.10 \
+  --final-fr-to-ball-target-surface-gap-m 0.15 \
+  --final-fr-gap-tolerance-m 0.02 \
+  --final-fr-max-foot-speed-m-s 0.05 \
+  --final-settle-timeout-s 2.0 \
+  --final-dock-max-m 0.85 --final-dock-max-duration-s 6.0 \
+  --max-stage-cycles 6 --max-stage-travel-m 0.35 \
+  --interface eth0 \
+  --lowcmd-python .conda-unitree-sdk-py311/bin/python \
+  --trajectory "$trajectory" --kp 60 --kd 5 \
+  --handoff-blend-s 1.2 --prehold-s 1.0 \
+  --preset-time-scale 0.95 --fr-swing-scale 1.3 \
+  --kick-baseline-stable-window-s 1.0 \
+  --kick-baseline-stable-timeout-s 12.0 \
+  --kick-start-countdown-s 0.5 --kick-hold-after-s 60 \
+  --execute \
+  --operator-confirm ROUGH_STAGE_THEN_FR_KICK_ESTOP_READY
 ```
 
 ```bash
@@ -247,6 +315,37 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --direct-remote-status "$status" --execute \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
+
+### AprilTag 없는 ball-only fallback
+
+기본 동작은 계속 Tag 11과 `target_line`을 요구한다. Tag가 없는 시연 환경에서는
+`--allow-tagless-ball-kick`을 **명시한 경우에만** captured FR lane의 ball bearing과
+D435i aligned-depth/floor plane을 사용한다. Tag가 보이면 기존 tag-guided 정렬이 우선되고,
+처음부터 Tag가 없을 때만 `alignment_mode=ball_only`가 된다. ball-only 실행은 FR 앞의 공
+위치와 거리는 확인하지만 공이 날아갈 target 방향은 확인할 수 없다. 출력에도
+`target_direction_verified=false`가 남는다.
+
+먼저 motion 없는 dry-run으로 `dry_run_next_action`, `ball_error_rad`, final dock 거리를 확인한다.
+`--ball-bearing-tolerance-rad 0.03`은 captured template의 tolerance를 완화하지 않고 더 엄격한
+runtime 상한으로만 작동한다.
+
+```bash
+python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
+  --robot-ip 192.168.123.161 --tag-id 11 --fr-lane-template "$template" \
+  --direct-remote-status "$status" --allow-tagless-ball-kick \
+  --lane-axis-bearing-rad 0.0 --ball-bearing-tolerance-rad 0.03 \
+  --enable-final-dock --use-direct-fr-kinematics \
+  --camera-body-forward-m 0.335136277245694 \
+  --ball-radius-m 0.11 \
+  --final-fr-to-ball-min-surface-gap-m 0.10 \
+  --final-fr-to-ball-target-surface-gap-m 0.15
+```
+
+통합 runner에도 같은 이름의 `--allow-tagless-ball-kick`을 주면 stage child로 전달된다.
+이 옵션은 `--allow-rough-kick`과 다르다. 전자는 Tag 없는 geometry를 명시 허용하고, 후자는
+남아 있는 strict geometry 오차까지 무시하는 별도 override다. ball-only에서도 공 검출,
+depth/floor plane, bearing tolerance, LiDAR odometry, final settle 및 remote watchdog gate는
+그대로 유지된다.
 
 dry-run이 `lateral_to_fr_lane`이면, 이것은 먼저 FR lane으로 게걸음해야 한다는 뜻이다. clear
 floor에서 아래 command는 `lx=+0.20` pulse **1회**, 안정 재관측 **1회**만 수행한 뒤 neutral로
@@ -263,8 +362,10 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
   --operator-confirm MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY
 ```
 
-YOLOv5n ONNX artifact와 decoder 출처: [Ultralytics YOLOv5 v7.0 release](https://github.com/ultralytics/yolov5/releases/tag/v7.0),
-[Ultralytics ONNX/OpenCV DNN export guide](https://docs.ultralytics.com/yolov5/tutorials/model-export/).
+YOLO11n ONNX artifact 출처는
+[Ultralytics assets v8.3.0](https://github.com/ultralytics/assets/releases/tag/v8.3.0)이며,
+project downloader가 SHA-256을 고정한다. OpenCV DNN decoder는 기존 YOLOv5와 YOLO11
+출력 형식을 모두 지원하지만 실물 실행 기본 artifact는 `yolo11n-v8.3.0.onnx`다.
 
 출력 `metadata.json`의 `camera_to_base_extrinsic`은 의도적으로 `null`이다. 카메라 mount의
 실측 rigid transform을 얻기 전에는 base-frame ball/Tag 좌표나 접근 command를 만들지 않는다.
