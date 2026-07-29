@@ -148,8 +148,9 @@ watcher는 publisher를 만들지 않는다. 같은 read-only process가 `rt/low
 motor `0/1/2`를 구독하고 Go2 URDF chain으로 `fr_foot_kinematics`를 상태 JSON에 기록한다.
 이 firmware의 WebRTC `SportModeState.foot_position_body`는 12개 모두 0이어서 FR 거리 계산에
 사용하지 않는다. direct DDS 결과의 `valid=true`, 증가하는 `sample_count`, 작은 `age_s`,
-물리적으로 타당한 `foot_position_body_m`가 실물에서 확인되기 전에는 automatic final kick
-distance gate에 연결하지 않는다. `READY` 뒤 empty floor/E-stop 상태에서 physical remote
+물리적으로 타당한 `foot_position_body_m`가 실물에서 확인되어 통합 runner의
+automatic final kick distance gate에 명시적으로 연결했다. 매 실행에서 fresh FK가
+없으면 fail-closed한다. `READY` 뒤 empty floor/E-stop 상태에서 physical remote
 stick을 잠깐 입력해 `physical_input_event_count`를 1 이상으로 만들고, 실행 전에는 stick을
 중립으로 돌린 뒤 0.6초 이상 기다린다.
 
