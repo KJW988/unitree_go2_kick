@@ -203,7 +203,11 @@ gait initiation 전에 끝날 수 있었다). 기본 staging depth는 0.65–0.8
 우선순위는 Tag ground-ray yaw로 body/FR 방향을 kick lane과 평행하게 정렬 → FR toe→ball→Tag
 상대 bearing의 측방 보정 → yaw 재확인 → 전진이다. robot yaw는 공과 Tag를 거의 함께 회전시키므로
 상대적인 lateral lane 오차를 고칠 수 없다. 따라서 yaw 정렬 뒤 남은 상대 bearing을
-`--allow-lateral-search`의 0.50초 lateral probe와 다음 D435i depth 관측으로 보정한다.
+`--allow-lateral-search`의 bounded lateral probe와 다음 D435i depth 관측으로 보정한다.
+0.80초마다 neutral로 끊은 실물 로그에서 gait initiation만 반복되어 실제 횟변위가
+4.5mm였다. 현재 lateral command 상한은 2.0초이지만, LiDAR odometry가 계산한
+body-frame 횟변위 0.04–0.08m 목표를 새 sample 3개에서 연속 확인하면 즉시
+neutralize한다.
 통합 runner에서는 ball→Tag ground-ray의 camera bearing 목표를 0rad로 두고 heading
 deadband를 0.03rad로 제한한다. yaw pulse는 LiDAR odometry가 요청 yaw 변화량을 확인하면
 0.50초 상한 전에 neutralize한다. 이는 D435i optical forward가 robot forward와 평행하다는
