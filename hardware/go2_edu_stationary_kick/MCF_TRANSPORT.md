@@ -153,7 +153,14 @@ evidence로 사용하지 않는다.
 
 대신 `watch_go2_physical_remote_dds.py`가 이미 검증된 SDK direct DDS
 `rt/wirelesscontroller`를 read-only로 구독한다. watcher는 status JSON heartbeat와 localhost
-UDP event만 만들며 publisher, LowCmd, MotionSwitcher, Sport API를 사용하지 않는다.
+UDP event만 만들며 publisher, LowCmd, MotionSwitcher, Sport API를 사용하지 않는다. 같은
+process는 `rt/lowstate` motor 0/1/2도 read-only 구독해 Go2 URDF 기반 FR foot body-frame
+kinematics를 status JSON에 기록한다. WebRTC `SportModeState.foot_position_body`가 전부 0인
+현재 firmware에서는 이 direct DDS FK만 사용한다. 실물에서 FR body 위치
+`[0.185136,-0.127731,-0.307479]m`, 4457 samples, age 0.0007s가 확인되어
+`--use-direct-fr-kinematics` final distance gate에 연결했다. 중립 후 fresh FK, FR foot
+speed 0.05m/s 이하, FR toe→공 표면 gap 0.10–0.17m를 모두 통과해야 kick이
+허용된다.
 
 ```bash
 cd ~/Desktop/Jiwon/soccer/unitree_go2_kick
