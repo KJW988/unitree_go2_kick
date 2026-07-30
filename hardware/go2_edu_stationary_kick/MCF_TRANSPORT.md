@@ -69,8 +69,9 @@ python hardware/go2_edu_stationary_kick/probe_go2_mcf_webrtc.py \
 
 ## Minimal forward gait proof
 
-실제 robot에서 read-only probe가 `192.168.123.161`으로 통과했다. 이 IP는 robot PC의
-`192.168.123.18`이나 PC WLAN IP와 다르며 Go2 MCU WebRTC endpoint다. 다음 script는
+현재 robot WebRTC IP는 `192.168.123.161`이다. 이 IP는 robot PC의
+`192.168.123.18`이나 현재 PC WLAN IP `192.168.137.76`과 다르며 Go2 MCU WebRTC
+endpoint다. 다음 script는
 **기본값으로 read-only preflight만** 한다. preflight는 `mode/progress/body height/velocity`를
 확인하고, 운동 command를 전송하지 않는다.
 
@@ -184,7 +185,7 @@ WebRTC virtual joystick도 같은 `rt/wirelesscontroller` DDS topic에 echo된�
 기존처럼 preempt한다. window 중 physical remote가 virtual packet과 완전히 같은 값까지 보내면
 구별 불가하므로, 이 제한은 status JSON의
 `same_value_physical_input_during_echo_window_unobservable=true`로 명시한다.
-stage execute는 watcher의 `virtual_echo_protocol_version=1`과 동일 echo-window path를
+stage execute는 watcher의 `virtual_echo_protocol_version=2`와 동일 echo-window path를
 확인한다. 따라서 code update 전에 시작한 watcher는 재시작해야 하며, 그렇지 않으면
 `DIRECT_REMOTE_WATCHDOG_REJECTED`로 fail-closed한다.
 
@@ -197,8 +198,9 @@ stage execute는 watcher의 `virtual_echo_protocol_version=1`과 동일 echo-win
 
 이 stage는 D435i `state.json`에서 3개의 안정 sample에 대해 ball depth/YOLO confidence,
 ball bearing, Tag 지면투영 target bearing을 확인하고, LiDAR odometry static baseline과
-0.35 m travel hard limit을 통과할 때만 동작한다. continuous drive가 아니라 0.20 magnitude의
-짧은 pulse 뒤 neutral 3회와 재관측을 반복한다. yaw pulse는 0.50초다(이 실물에서 0.20초는
+0.35 m staging travel hard limit과 staging+final dock 1.20m 전체 hard limit을 통과할 때만
+동작한다. continuous drive가 아니라 0.20 magnitude의 짧은 pulse 뒤 neutral 3회와 재관측을
+반복한다. yaw pulse 상한은 0.80초다(이 실물에서 0.20초는
 gait initiation 전에 끝날 수 있었다). 기본 staging depth는 0.65–0.85 m다. 동작
 우선순위는 Tag ground-ray yaw로 body/FR 방향을 kick lane과 평행하게 정렬 → FR toe→ball→Tag
 상대 bearing의 측방 보정 → yaw 재확인 → 전진이다. robot yaw는 공과 Tag를 거의 함께 회전시키므로

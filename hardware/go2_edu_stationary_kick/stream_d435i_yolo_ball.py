@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D435i RGB-D + YOLOv5n 공 검출을 브라우저로 read-only 스트리밍한다.
+"""D435i RGB-D + YOLO11n 공 검출을 브라우저로 read-only 스트리밍한다.
 
 YOLO가 COCO ``sports ball`` 2D 후보를 만들고, D435i의 color-aligned depth가
 동일 bbox 내부의 metric range를 검증한다. Go2 LiDAR는 camera-to-base extrinsic과
@@ -50,7 +50,7 @@ class YoloBallDetector:
 
     def __init__(self, cv2: Any, np: Any, model: Path, confidence: float, nms: float):
         if not model.is_file():
-            raise RuntimeError("YOLO model이 없습니다: {} (fetch_yolov5n_model.py를 먼저 실행)".format(model))
+            raise RuntimeError("YOLO model이 없습니다: {} (fetch_yolo11n_model.py를 먼저 실행)".format(model))
         self.cv2, self.np = cv2, np
         self.net = cv2.dnn.readNetFromONNX(str(model))
         self.confidence, self.nms = float(confidence), float(nms)
@@ -205,7 +205,15 @@ def _fit_floor_plane(np: Any, depth_raw: Any, depth_scale_m: float, intrinsics: 
         normal /= np.linalg.norm(normal)
         offset = -float(np.dot(normal, centroid))
         inliers = np.abs(points @ normal + offset) <= 0.025
-    return normal, offset, int(np.count_nonzero(inliers))
+    inlier_count = int(np.count_nonzero(inliers))
+    # D435i optical +y는 아래쪽이다. SVD normal 부호를 고정하고, 로봇/바닥이 아닌
+    # 수직 벽이나 비현실적인 camera 높이를 floor로 채택하지 않는다.
+    if float(normal[1]) < 0.0:
+        normal, offset = -normal, -offset
+    camera_height_m = abs(float(offset))
+    if inlier_count < 80 or float(normal[1]) < 0.65 or not 0.15 <= camera_height_m <= 0.80:
+        return None
+    return normal, offset, inlier_count
 
 
 def _project_to_plane(np: Any, point: Optional[list[float]], plane: Optional[tuple[Any, float, int]]) -> Optional[list[float]]:
@@ -290,7 +298,7 @@ class _Handler(server.BaseHTTPRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, default=Path("hardware_models/yolov5n-v7.0.onnx"))
+    parser.add_argument("--model", type=Path, default=Path("hardware_models/yolo11n-v8.3.0.onnx"))
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--width", type=int, default=640)
@@ -308,6 +316,7 @@ def main() -> int:
         help="YOLO 단일-frame miss 때 마지막 bbox를 보존하는 최대 시간; depth는 매 frame 다시 계산한다",
     )
     parser.add_argument("--tag-size-m", type=float, default=0.152)
+    parser.add_argument("--target-tag-id", type=int, default=11)
     parser.add_argument("--ball-diameter-m", type=float, default=0.22)
     args = parser.parse_args()
     if not (1 <= args.port <= 65535 and min(args.width, args.height, args.fps, args.inference_every) > 0):
@@ -379,11 +388,12 @@ def main() -> int:
             ball_ground = _project_to_plane(np, ball_center, floor_plane)
             tag_ground = {str(key): _project_to_plane(np, value, floor_plane) for key, value in tag_centers.items()}
             target_direction = None
-            if ball_ground is not None and tag_ground.get("11") is not None:
-                delta = np.asarray(tag_ground["11"], dtype=np.float64) - np.asarray(ball_ground, dtype=np.float64)
+            target_tag_key = str(args.target_tag_id)
+            if ball_ground is not None and tag_ground.get(target_tag_key) is not None:
+                delta = np.asarray(tag_ground[target_tag_key], dtype=np.float64) - np.asarray(ball_ground, dtype=np.float64)
                 distance = float(np.linalg.norm(delta))
                 if distance >= 0.5:
-                    target_direction = {"tag_id": 11, "distance_m": distance,
+                    target_direction = {"tag_id": args.target_tag_id, "distance_m": distance,
                                         "unit_camera_xyz": [float(value) for value in delta / distance]}
             if latest_detection is not None:
                 x0, y0, x1, y1, confidence = latest_detection
@@ -398,6 +408,18 @@ def main() -> int:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50, 210, 255), 2, cv2.LINE_AA)
             ok, encoded = cv2.imencode(".jpg", rendered, [int(cv2.IMWRITE_JPEG_QUALITY), args.jpeg_quality])
             if ok:
+                diameter_consistency_ratio = None
+                if latest_detection is not None and ball_center is not None and ball_center[2] > 0.0:
+                    bbox_width = latest_detection[2] - latest_detection[0]
+                    bbox_height = latest_detection[3] - latest_detection[1]
+                    predicted_pixels = (
+                        0.5 * (float(intrinsics.fx) + float(intrinsics.fy))
+                        * args.ball_diameter_m / ball_center[2]
+                    )
+                    if predicted_pixels > 0.0:
+                        diameter_consistency_ratio = math.sqrt(
+                            float(bbox_width * bbox_height)
+                        ) / predicted_pixels
                 ball_state = None if latest_detection is None else {
                     "bbox_xyxy": [int(value) for value in latest_detection[:4]],
                     "confidence": float(latest_detection[4]),
@@ -407,6 +429,7 @@ def main() -> int:
                     "ground_camera_xyz_m": ball_ground,
                     "detection_age_s": detection_age_s,
                     "detection_held": bool(detection_age_s is not None and detection_age_s > 1.0 / args.fps),
+                    "diameter_consistency_ratio": diameter_consistency_ratio,
                 }
                 frames.publish(encoded.tobytes(), {
                     "ready": True,
@@ -420,6 +443,8 @@ def main() -> int:
                         "offset": float(floor_plane[1]), "inlier_count": floor_plane[2],
                     },
                     "target_line": target_direction,
+                    "target_tag_id": args.target_tag_id,
+                    "model": str(args.model),
                     "image_size": [int(args.width), int(args.height)],
                 })
     finally:

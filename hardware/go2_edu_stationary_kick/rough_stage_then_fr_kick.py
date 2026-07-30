@@ -70,11 +70,14 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--enable-final-dock",
         "--use-direct-fr-kinematics",
         "--camera-body-forward-m", str(args.camera_body_forward_m),
+        "--camera-body-lateral-m", str(args.camera_body_lateral_m),
+        "--camera-body-yaw-rad", str(args.camera_body_yaw_rad),
         "--fr-kinematics-max-age-s", str(args.fr_kinematics_max_age_s),
         "--ball-radius-m", str(args.ball_radius_m),
         "--final-fr-to-ball-min-surface-gap-m", str(args.final_fr_to_ball_min_surface_gap_m),
         "--final-fr-to-ball-target-surface-gap-m", str(args.final_fr_to_ball_target_surface_gap_m),
         "--final-fr-gap-tolerance-m", str(args.final_fr_gap_tolerance_m),
+        "--final-fr-max-lateral-error-m", str(args.final_fr_max_lateral_error_m),
         "--final-fr-max-foot-speed-m-s", str(args.final_fr_max_foot_speed_m_s),
         "--camera-to-fr-forward-m", str(args.camera_to_fr_forward_m),
         "--fr-to-ball-forward-m", str(args.fr_to_ball_forward_m),
@@ -82,8 +85,10 @@ def stage_command(args: argparse.Namespace, output: Path) -> list[str]:
         "--final-dock-max-duration-s", str(args.final_dock_max_duration_s),
         "--final-gait-to-kick-clearance-m", str(args.final_gait_to_kick_clearance_m),
         "--final-settle-timeout-s", str(args.final_settle_timeout_s),
+        "--final-settle-max-odom-yaw-span-rad", str(args.final_settle_max_odom_yaw_span_rad),
         "--max-cycles", str(args.max_stage_cycles),
         "--max-travel-m", str(args.max_stage_travel_m),
+        "--max-total-travel-m", str(args.max_total_travel_m),
         "--output", str(output),
     ]
     if args.allow_tagless_ball_kick:
@@ -107,6 +112,7 @@ def harness_command(args: argparse.Namespace) -> list[str]:
         "--prehold-s", str(args.prehold_s),
         "--preset-time-scale", str(args.preset_time_scale),
         "--fr-swing-scale", str(args.fr_swing_scale),
+        "--direct-remote-status", str(args.direct_remote_status),
         "--baseline-stable-window-s", str(args.kick_baseline_stable_window_s),
         "--baseline-stable-timeout-s", str(args.kick_baseline_stable_timeout_s),
         "--start-countdown-s", str(args.kick_start_countdown_s),
@@ -157,6 +163,8 @@ def main() -> int:
         "--camera-body-forward-m", type=float, default=DEFAULT_CAMERA_BODY_FORWARD_M,
         help="실측된 robot body origin→D435i lens forward 고정값",
     )
+    parser.add_argument("--camera-body-lateral-m", type=float, default=0.0)
+    parser.add_argument("--camera-body-yaw-rad", type=float, default=0.0)
     parser.add_argument("--fr-kinematics-max-age-s", type=float, default=0.15)
     parser.add_argument("--ball-radius-m", type=float, default=0.11)
     parser.add_argument(
@@ -168,6 +176,7 @@ def main() -> int:
         help="kick 전 FR toe→공 표면 목표",
     )
     parser.add_argument("--final-fr-gap-tolerance-m", type=float, default=0.02)
+    parser.add_argument("--final-fr-max-lateral-error-m", type=float, default=0.05)
     parser.add_argument("--final-fr-max-foot-speed-m-s", type=float, default=0.05)
     parser.add_argument("--final-dock-max-m", type=float, default=0.85)
     parser.add_argument("--final-dock-max-duration-s", type=float, default=6.0)
@@ -176,6 +185,8 @@ def main() -> int:
         help="마지막 gait 발걸음이 공을 치지 않고 강화 FR kick에 넘길 전방 여유",
     )
     parser.add_argument("--final-settle-timeout-s", type=float, default=2.0)
+    parser.add_argument("--final-settle-max-odom-yaw-span-rad", type=float, default=0.04)
+    parser.add_argument("--max-total-travel-m", type=float, default=1.20)
     parser.add_argument("--interface", default="eth0")
     parser.add_argument("--lowcmd-python", type=Path, required=True)
     parser.add_argument("--trajectory", type=Path, required=True)
@@ -240,6 +251,10 @@ def main() -> int:
         parser.error("camera-to-FR은 signed [-0.40,0.40], FR-to-ball은 (0,0.40]이어야 합니다")
     if not 0.10 <= args.camera_body_forward_m <= 0.55:
         parser.error("--camera-body-forward-m은 [0.10, 0.55] 범위여야 합니다")
+    if not -0.30 <= args.camera_body_lateral_m <= 0.30:
+        parser.error("--camera-body-lateral-m은 [-0.30, 0.30] 범위여야 합니다")
+    if not math.isfinite(args.camera_body_yaw_rad) or abs(args.camera_body_yaw_rad) > 0.35:
+        parser.error("--camera-body-yaw-rad는 finite [-0.35, 0.35] 범위여야 합니다")
     if not 0.02 <= args.fr_kinematics_max_age_s <= 0.35:
         parser.error("--fr-kinematics-max-age-s는 [0.02, 0.35] 범위여야 합니다")
     if not 0.08 <= args.ball_radius_m <= 0.14:
@@ -252,6 +267,8 @@ def main() -> int:
         parser.error("FR→공 표면 최소/목표 gap 범위가 유효하지 않습니다")
     if not 0.0 <= args.final_fr_gap_tolerance_m <= 0.05:
         parser.error("--final-fr-gap-tolerance-m은 [0.0, 0.05] 범위여야 합니다")
+    if not 0.01 <= args.final_fr_max_lateral_error_m <= 0.12:
+        parser.error("--final-fr-max-lateral-error-m은 [0.01, 0.12] 범위여야 합니다")
     if not 0.01 <= args.final_fr_max_foot_speed_m_s <= 0.15:
         parser.error("--final-fr-max-foot-speed-m-s는 [0.01, 0.15] 범위여야 합니다")
     if not 0.05 <= args.final_dock_max_m <= 0.85:
@@ -262,6 +279,10 @@ def main() -> int:
         parser.error("--final-gait-to-kick-clearance-m은 [0.05, 0.15] 범위여야 합니다")
     if not 1.0 <= args.final_settle_timeout_s <= 3.0:
         parser.error("--final-settle-timeout-s는 [1.0, 3.0] 범위여야 합니다")
+    if not 0.01 <= args.final_settle_max_odom_yaw_span_rad <= 0.12:
+        parser.error("--final-settle-max-odom-yaw-span-rad는 [0.01, 0.12] 범위여야 합니다")
+    if not args.max_stage_travel_m <= args.max_total_travel_m <= 1.20:
+        parser.error("--max-total-travel-m은 max-stage-travel 이상 1.20 이하여야 합니다")
     if not 0.5 <= args.kick_baseline_stable_window_s <= 3.0:
         parser.error("--kick-baseline-stable-window-s는 [0.5, 3.0] 범위여야 합니다")
     if not 2.0 <= args.kick_baseline_stable_timeout_s <= 30.0:

@@ -36,7 +36,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 18181
 DEFAULT_DEADZONE = 0.15
 DEFAULT_HEARTBEAT_HZ = 20.0
-VIRTUAL_ECHO_PROTOCOL_VERSION = 1
+VIRTUAL_ECHO_PROTOCOL_VERSION = 2
 
 # Go2 URDF의 FR chain을 그대로 옮긴 read-only forward kinematics 상수다.
 # 출처: resources/robots/go1/go2/urdf/go2.urdf
@@ -47,6 +47,8 @@ FR_HIP_ORIGIN_BODY_M = (0.1934, -0.0465, 0.0)
 FR_HIP_TO_THIGH_Y_M = -0.0955
 FR_THIGH_LENGTH_M = 0.213
 FR_CALF_LENGTH_M = 0.213
+FR_FOOT_COLLISION_ORIGIN_M = (-0.002, 0.0, 0.0)
+FR_FOOT_COLLISION_RADIUS_M = 0.022
 FR_MOTOR_INDICES = (0, 1, 2)
 
 
@@ -87,6 +89,30 @@ def fr_foot_kinematics_body(
     return position, velocity
 
 
+def fr_foot_collision_kinematics_body(
+    joint_q_rad: tuple[float, float, float],
+    joint_dq_rad_s: tuple[float, float, float],
+    foot_position: list[float], foot_velocity: list[float],
+) -> tuple[list[float], list[float]]:
+    """URDF foot collision sphere center의 body-frame 위치/속도를 계산한다."""
+    q0, q1, q2 = joint_q_rad
+    dq0, dq1, dq2 = joint_dq_rad_s
+    theta, dtheta = q1 + q2, dq1 + dq2
+    s0, c0 = math.sin(q0), math.cos(q0)
+    st, ct = math.sin(theta), math.cos(theta)
+    local_x = FR_FOOT_COLLISION_ORIGIN_M[0]
+    offset = [local_x * ct, local_x * s0 * st, -local_x * c0 * st]
+    offset_speed = [
+        -local_x * st * dtheta,
+        local_x * (c0 * dq0 * st + s0 * ct * dtheta),
+        local_x * (s0 * dq0 * st - c0 * ct * dtheta),
+    ]
+    return (
+        [foot_position[index] + offset[index] for index in range(3)],
+        [foot_velocity[index] + offset_speed[index] for index in range(3)],
+    )
+
+
 class RemoteWatchState:
     """DDS callback과 heartbeat loop 사이의 작은 thread-safe 상태다."""
 
@@ -110,6 +136,8 @@ class RemoteWatchState:
         self.fr_joint_dq_rad_s: list[float] | None = None
         self.fr_foot_position_body_m: list[float] | None = None
         self.fr_foot_speed_body_m_s: list[float] | None = None
+        self.fr_foot_collision_center_body_m: list[float] | None = None
+        self.fr_foot_collision_speed_body_m_s: list[float] | None = None
         self.lowstate_error: str | None = "rt/lowstate sample을 아직 받지 못했습니다"
         self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -182,6 +210,9 @@ class RemoteWatchState:
             if not all(math.isfinite(value) for value in (*q, *dq)):
                 raise ValueError("FR q/dq에 non-finite 값이 있습니다")
             position, velocity = fr_foot_kinematics_body(q, dq)
+            collision_center, collision_speed = fr_foot_collision_kinematics_body(
+                q, dq, position, velocity,
+            )
         except (AttributeError, IndexError, TypeError, ValueError) as error:
             with self._lock:
                 self.lowstate_error = str(error)
@@ -193,6 +224,8 @@ class RemoteWatchState:
             self.fr_joint_dq_rad_s = list(dq)
             self.fr_foot_position_body_m = position
             self.fr_foot_speed_body_m_s = velocity
+            self.fr_foot_collision_center_body_m = collision_center
+            self.fr_foot_collision_speed_body_m_s = collision_speed
             self.lowstate_error = None
 
     def snapshot(self) -> dict[str, Any]:
@@ -230,11 +263,16 @@ class RemoteWatchState:
                     "joint_dq_rad_s": self.fr_joint_dq_rad_s,
                     "foot_position_body_m": self.fr_foot_position_body_m,
                     "foot_speed_body_m_s": self.fr_foot_speed_body_m_s,
+                    "foot_collision_center_body_m": self.fr_foot_collision_center_body_m,
+                    "foot_collision_speed_body_m_s": self.fr_foot_collision_speed_body_m_s,
+                    "foot_collision_radius_m": FR_FOOT_COLLISION_RADIUS_M,
                     "urdf_geometry_m": {
                         "hip_origin_body": list(FR_HIP_ORIGIN_BODY_M),
                         "hip_to_thigh_y": FR_HIP_TO_THIGH_Y_M,
                         "thigh_length": FR_THIGH_LENGTH_M,
                         "calf_length": FR_CALF_LENGTH_M,
+                        "foot_collision_origin": list(FR_FOOT_COLLISION_ORIGIN_M),
+                        "foot_collision_radius": FR_FOOT_COLLISION_RADIUS_M,
                     },
                     "error": self.lowstate_error,
                 },

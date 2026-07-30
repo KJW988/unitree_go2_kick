@@ -61,12 +61,15 @@ FINAL_SETTLE_WINDOW_S = 0.40
 FINAL_SETTLE_MAX_PLANAR_SPEED_M_S = 0.08
 FINAL_SETTLE_MAX_YAW_SPEED_RAD_S = 0.12
 FINAL_SETTLE_MAX_ODOM_SPAN_M = 0.025
+FINAL_SETTLE_MAX_ODOM_YAW_SPAN_RAD = 0.04
 FR_KINEMATICS_MAX_AGE_S = 0.15
 FINAL_FR_MAX_FOOT_SPEED_M_S = 0.05
 BALL_RADIUS_M = 0.11
+FR_FOOT_COLLISION_RADIUS_M = 0.022
 FINAL_FR_TO_BALL_MIN_SURFACE_GAP_M = 0.10
 FINAL_FR_TO_BALL_TARGET_SURFACE_GAP_M = 0.15
 FINAL_FR_GAP_TOLERANCE_M = 0.02
+FINAL_FR_MAX_LATERAL_ERROR_M = 0.05
 # 0.80 s lateral pulse도 이 실물에서 gait initiation만 반복하고 실제 횟이동은
 # 4.5 mm에 그쳤다. magnitude는 그대로 두고 2.0 s 상한을 주되, LiDAR odometry가
 # 목표 횟변위를 연속 확인하면 상한 전에 neutralize한다.
@@ -86,14 +89,18 @@ NEUTRAL_PACKET_COUNT = 3
 STATE_SETTLE_S = 1.0
 REOBSERVE_SETTLE_S = 0.50
 MAX_STATIC_BASELINE_SPAN_M = 0.04
+MAX_STATIC_BASELINE_YAW_SPAN_RAD = 0.08
 MAX_ODOM_STALE_S = 0.50
 MAX_PERCEPTION_AGE_S = 0.35
 MAX_BALL_DETECTION_AGE_S = 0.50
 OBSERVATION_TIMEOUT_S = 5.0
 MIN_BALL_CONFIDENCE = 0.015
+MIN_BALL_DIAMETER_CONSISTENCY_RATIO = 0.45
+MAX_BALL_DIAMETER_CONSISTENCY_RATIO = 2.20
 STAGE_RANGE_MIN_M = 0.65
 STAGE_RANGE_MAX_M = 0.85
 MAX_TRAVEL_M = 0.35
+MAX_TOTAL_TRAVEL_M = 1.20
 MAX_CYCLES = 5
 DIRECT_REMOTE_MAX_STATUS_AGE_S = 0.35
 DIRECT_REMOTE_HOLD_S = 0.60
@@ -105,6 +112,11 @@ VIRTUAL_ECHO_LEASE_S = 0.50
 LATERAL_MIN_IMPROVEMENT_RAD = 0.01
 MAX_LATERAL_PROBE_ATTEMPTS = 3
 CONFIRMATION = "MCF_CAMERA_STAGE_CLEAR_FLOOR_ESTOP_READY"
+# 2026-07-28/29 실물 odometry 응답: +rx는 yaw를 감소시키고, +lx는 body lateral
+# 좌표를 감소시켰다. 목표 도달 판정은 이 signed 응답과 같은 방향만 인정한다.
+YAW_ODOM_RESPONSE_SIGN_PER_RX = -1.0
+LATERAL_ODOM_RESPONSE_SIGN_PER_LX = -1.0
+VIRTUAL_ECHO_PROTOCOL_VERSION = 2
 
 
 def unwrap_data(message: Any) -> dict[str, Any] | None:
@@ -123,6 +135,38 @@ def angle_distance(first: float, second: float) -> float:
     return math.atan2(math.sin(first - second), math.cos(first - second))
 
 
+def circular_mean(angles: list[float]) -> float:
+    """-pi/pi 경계를 보존하는 원형 평균이다."""
+    if not angles:
+        raise ValueError("angles가 비었습니다")
+    return math.atan2(
+        sum(math.sin(value) for value in angles),
+        sum(math.cos(value) for value in angles),
+    )
+
+
+def circular_span(angles: list[float], center: float | None = None) -> float:
+    """원형 중심으로부터의 최대 양방향 yaw 폭을 반환한다."""
+    if not angles:
+        return float("inf")
+    anchor = circular_mean(angles) if center is None else center
+    return 2.0 * max(abs(angle_distance(value, anchor)) for value in angles)
+
+
+def body_xy_to_world(pose: dict[str, float], point_xy: tuple[float, float]) -> tuple[float, float]:
+    cosine, sine = math.cos(pose["yaw_rad"]), math.sin(pose["yaw_rad"])
+    return (
+        pose["x"] + cosine * point_xy[0] - sine * point_xy[1],
+        pose["y"] + sine * point_xy[0] + cosine * point_xy[1],
+    )
+
+
+def world_xy_to_body(pose: dict[str, float], point_xy: tuple[float, float]) -> tuple[float, float]:
+    dx, dy = point_xy[0] - pose["x"], point_xy[1] - pose["y"]
+    cosine, sine = math.cos(pose["yaw_rad"]), math.sin(pose["yaw_rad"])
+    return cosine * dx + sine * dy, -sine * dx + cosine * dy
+
+
 @dataclass(frozen=True)
 class Perception:
     ball_range_m: float
@@ -135,6 +179,7 @@ class Perception:
     ball_detection_age_s: float
     ball_ground_range_m: float
     ball_ground_forward_m: float
+    ball_diameter_consistency_ratio: float
 
 
 @dataclass(frozen=True)
@@ -194,19 +239,24 @@ def fetch_perception_with_reason(
         target_distance = float(target["distance_m"]) if target_matches else None
         stamp = float(payload["stamp_monotonic_s"])
         detection_age = float(ball["detection_age_s"])
+        diameter_consistency = float(ball["diameter_consistency_ratio"])
         plane_offset = float(floor_plane["offset"])
+        plane_inliers = int(floor_plane["inlier_count"])
     except (KeyError, TypeError, ValueError):
         return None, "perception_fields_invalid"
     if (
         ball_ground is None
         or plane_normal is None
         or not all(math.isfinite(value) for value in (
-            confidence, ball_range, stamp, detection_age, plane_offset,
+            confidence, ball_range, stamp, detection_age, diameter_consistency, plane_offset,
         ))
         or (target_matches and (target_unit is None or target_distance is None or not math.isfinite(target_distance)))
         or ball_range <= 0.0
         or (target_distance is not None and target_distance < 0.5)
         or detection_age < 0.0
+        or plane_inliers < 80
+        or plane_normal[1] < 0.65
+        or not 0.15 <= abs(plane_offset) <= 0.80
     ):
         return None, "perception_geometry_invalid"
     camera_ground = tuple(-plane_offset * component for component in plane_normal)
@@ -255,6 +305,7 @@ def fetch_perception_with_reason(
         ball_detection_age_s=detection_age,
         ball_ground_range_m=ball_ground_range,
         ball_ground_forward_m=ball_ground_forward,
+        ball_diameter_consistency_ratio=diameter_consistency,
     ), "perception_sample_valid" if target_unit is not None else "tagless_ball_sample_valid"
 
 
@@ -289,6 +340,14 @@ async def stable_perception(args: argparse.Namespace) -> tuple[Perception | None
             latest_reason = "ball_detection_stale"
             await asyncio.sleep(args.observation_interval_s)
             continue
+        if not (
+            args.min_ball_diameter_consistency_ratio
+            <= sample.ball_diameter_consistency_ratio
+            <= args.max_ball_diameter_consistency_ratio
+        ):
+            latest_reason = "ball_metric_size_inconsistent"
+            await asyncio.sleep(args.observation_interval_s)
+            continue
         if not 0.30 <= sample.ball_range_m <= 3.0:
             latest_reason = "ball_depth_out_of_range"
             await asyncio.sleep(args.observation_interval_s)
@@ -312,7 +371,36 @@ async def stable_perception(args: argparse.Namespace) -> tuple[Perception | None
             for sample in samples if sample.target_bearing_rad is not None
         ) > args.max_bearing_jitter_rad:
             return None, "target_bearing_unstable"
-    return anchor, "perception_stable" if anchor.tag_visible else "tagless_ball_perception_stable"
+    aggregate = Perception(
+        ball_range_m=float(statistics.median(sample.ball_range_m for sample in samples)),
+        ball_confidence=min(sample.ball_confidence for sample in samples),
+        ball_bearing_rad=circular_mean([sample.ball_bearing_rad for sample in samples]),
+        target_bearing_rad=(
+            circular_mean([
+                sample.target_bearing_rad for sample in samples
+                if sample.target_bearing_rad is not None
+            ]) if anchor.tag_visible else None
+        ),
+        target_distance_m=(
+            float(statistics.median(
+                sample.target_distance_m for sample in samples
+                if sample.target_distance_m is not None
+            )) if anchor.tag_visible else None
+        ),
+        tag_visible=anchor.tag_visible,
+        age_s=max(sample.age_s for sample in samples),
+        ball_detection_age_s=max(sample.ball_detection_age_s for sample in samples),
+        ball_ground_range_m=float(statistics.median(
+            sample.ball_ground_range_m for sample in samples
+        )),
+        ball_ground_forward_m=float(statistics.median(
+            sample.ball_ground_forward_m for sample in samples
+        )),
+        ball_diameter_consistency_ratio=float(statistics.median(
+            sample.ball_diameter_consistency_ratio for sample in samples
+        )),
+    )
+    return aggregate, "perception_stable" if anchor.tag_visible else "tagless_ball_perception_stable"
 
 
 def sport_state_summary(message: Any, elapsed_s: float) -> dict[str, Any]:
@@ -354,12 +442,19 @@ def pose_summary(message: Any, elapsed_s: float) -> dict[str, float] | None:
     return {"elapsed_s": elapsed_s, "x": x, "y": y, "z": z, "yaw_rad": yaw}
 
 
-def static_baseline(poses: list[dict[str, float]]) -> tuple[dict[str, float] | None, float]:
+def static_baseline(
+    poses: list[dict[str, float]],
+) -> tuple[dict[str, float] | None, float, float]:
     if len(poses) < 5:
-        return None, float("inf")
-    baseline = {key: float(statistics.median(pose[key] for pose in poses)) for key in ("x", "y", "z", "yaw_rad")}
+        return None, float("inf"), float("inf")
+    baseline = {
+        key: float(statistics.median(pose[key] for pose in poses))
+        for key in ("x", "y", "z")
+    }
+    yaws = [pose["yaw_rad"] for pose in poses]
+    baseline["yaw_rad"] = circular_mean(yaws)
     span = max(math.hypot(pose["x"] - baseline["x"], pose["y"] - baseline["y"]) for pose in poses)
-    return baseline, span
+    return baseline, span, circular_span(yaws, baseline["yaw_rad"])
 
 
 def planar_distance(baseline: dict[str, float], pose: dict[str, float]) -> float:
@@ -380,6 +475,20 @@ def lateral_progress_m(baseline: dict[str, float], pose: dict[str, float]) -> fl
     return -dx * math.sin(baseline["yaw_rad"]) + dy * math.cos(baseline["yaw_rad"])
 
 
+def commanded_yaw_progress_rad(
+    rx: float, baseline: dict[str, float], pose: dict[str, float],
+) -> float:
+    expected_sign = math.copysign(1.0, rx) * YAW_ODOM_RESPONSE_SIGN_PER_RX
+    return expected_sign * angle_distance(pose["yaw_rad"], baseline["yaw_rad"])
+
+
+def commanded_lateral_progress_m(
+    lx: float, baseline: dict[str, float], pose: dict[str, float],
+) -> float:
+    expected_sign = math.copysign(1.0, lx) * LATERAL_ODOM_RESPONSE_SIGN_PER_LX
+    return expected_sign * lateral_progress_m(baseline, pose)
+
+
 def state_is_safe_to_walk(state: dict[str, Any] | None) -> tuple[bool, str]:
     if state is None:
         return False, "sportmodestate_missing"
@@ -393,6 +502,11 @@ def state_is_safe_to_walk(state: dict[str, Any] | None) -> tuple[bool, str]:
     velocity = state.get("velocity")
     if velocity is not None and max(abs(float(value)) for value in velocity) > 0.12:
         return False, "robot_already_moving"
+    yaw_speed = state.get("yaw_speed")
+    if not isinstance(yaw_speed, (int, float)) or not math.isfinite(float(yaw_speed)):
+        return False, "yaw_speed_missing_or_invalid"
+    if abs(float(yaw_speed)) > 0.12:
+        return False, "robot_already_turning"
     return True, "mcf_stand_preflight_pass"
 
 
@@ -406,6 +520,9 @@ class DirectFrKinematics:
     joint_dq_rad_s: tuple[float, float, float]
     foot_position_body_m: tuple[float, float, float]
     foot_speed_body_m_s: tuple[float, float, float]
+    foot_collision_center_body_m: tuple[float, float, float]
+    foot_collision_speed_body_m_s: tuple[float, float, float]
+    foot_collision_radius_m: float
 
 
 @dataclass(frozen=True)
@@ -463,7 +580,7 @@ def load_direct_remote_watchdog(
         return None, "direct_remote_watchdog_missing_fields"
     if payload.get("ready") is not True or payload.get("motion_commands_sent") is not False:
         return None, "direct_remote_watchdog_not_read_only_ready"
-    if echo_protocol != 1:
+    if echo_protocol != VIRTUAL_ECHO_PROTOCOL_VERSION:
         return None, "direct_remote_watchdog_echo_protocol_mismatch"
     if virtual_echo_window is not None and payload.get("virtual_echo_window") != str(virtual_echo_window):
         return None, "direct_remote_watchdog_echo_window_mismatch"
@@ -484,9 +601,14 @@ def load_direct_remote_watchdog(
             fr_joint_dq = point3(fr_payload.get("joint_dq_rad_s"))
             fr_position = point3(fr_payload.get("foot_position_body_m"))
             fr_speed = point3(fr_payload.get("foot_speed_body_m_s"))
+            fr_collision_center = point3(fr_payload.get("foot_collision_center_body_m"))
+            fr_collision_speed = point3(fr_payload.get("foot_collision_speed_body_m_s"))
+            fr_collision_radius = float(fr_payload["foot_collision_radius_m"])
         except (KeyError, TypeError, ValueError):
             fr_receipt, fr_sample_count = float("nan"), 0
             fr_joint_q = fr_joint_dq = fr_position = fr_speed = None
+            fr_collision_center = fr_collision_speed = None
+            fr_collision_radius = float("nan")
         if (
             math.isfinite(fr_receipt)
             and fr_sample_count > 0
@@ -495,13 +617,18 @@ def load_direct_remote_watchdog(
             and fr_joint_dq is not None
             and fr_position is not None
             and fr_speed is not None
+            and fr_collision_center is not None
+            and fr_collision_speed is not None
+            and math.isfinite(fr_collision_radius)
+            and 0.015 <= fr_collision_radius <= 0.04
             and 0.05 <= fr_position[0] <= 0.35
             and -0.35 <= fr_position[1] <= 0.05
             and -0.50 <= fr_position[2] <= -0.10
         ):
             fr_kinematics = DirectFrKinematics(
                 fr_receipt, fr_sample_count, fr_joint_q, fr_joint_dq,
-                fr_position, fr_speed,
+                fr_position, fr_speed, fr_collision_center, fr_collision_speed,
+                fr_collision_radius,
             )
     if require_fr_kinematics and fr_kinematics is None:
         return None, "direct_fr_kinematics_missing_stale_or_implausible"
@@ -586,7 +713,7 @@ def action_for(
         return "forward", 0.0, args.joystick_magnitude, 0.0
 
     errors = fr_lane_bearing_errors(perception, lane, args.lane_axis_bearing_rad)
-    # 0.20/0.50 s yaw pulse의 실물 해상도보다 작은 target 오차까지 매번 회전시키면
+    # bounded yaw pulse의 실물 해상도보다 작은 target 오차까지 매번 회전시키면
     # 공이 FOV 밖으로 나갈 수 있다. 이 값은 rough camera staging의 yaw deadband이며,
     # strict FR lane/kick 허용오차 자체를 완화하는 값은 아니다.
     target_action_tolerance = min(
@@ -594,8 +721,9 @@ def action_for(
     )
     target_error = errors["target_error_rad"]
     if abs(target_error) > target_action_tolerance:
-        # Upstream example convention: +rx left turn, -rx right turn.
-        return "turn_to_tag_ray", 0.0, 0.0, -math.copysign(args.joystick_magnitude, target_error)
+        # 같은 D435i bearing 오차에는 ball-only와 같은 부호를 적용한다. 실물에서
+        # +rx가 camera bearing을 감소시켰으므로 error=(observed-desired)와 같은 부호다.
+        return "turn_to_tag_ray", 0.0, 0.0, math.copysign(args.joystick_magnitude, target_error)
     # yaw 뒤에도 남는 ball-vs-Tag 상대 bearing은 FR toe가 공 중심 뒤 선상에 없다는 뜻이다.
     if abs(errors["relative_error_rad"]) > min(
         lane.ball_bearing_tolerance_rad, lane.target_bearing_tolerance_rad,
@@ -681,78 +809,100 @@ def final_dock_plan(
     perception: Perception, args: argparse.Namespace,
     fr_kinematics: DirectFrKinematics | None = None,
     camera_body_forward_m: float | None = None,
+    start_pose: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """camera 관측과 현재 FR FK로 camera-blind final dock 목표를 계산한다.
-
-    D435i ground point는 공 중심의 수평 위치다. direct mode에서는 사람이 재는
-    FR→공 표면 gap에 공 반지름을 더해 FR→공 중심 목표로 변환한다.
-    """
+    """D435i 공 중심과 현재 FR collision sphere의 2D final dock 목표를 계산한다."""
+    forward = perception.ball_ground_range_m * math.cos(perception.ball_bearing_rad)
+    image_right = perception.ball_ground_range_m * math.sin(perception.ball_bearing_rad)
+    camera_yaw = args.camera_body_yaw_rad
+    ball_body_xy = (
+        float(camera_body_forward_m or 0.0)
+        + forward * math.cos(camera_yaw) + image_right * math.sin(camera_yaw),
+        args.camera_body_lateral_m
+        + forward * math.sin(camera_yaw) - image_right * math.cos(camera_yaw),
+    )
     if args.use_direct_fr_kinematics:
         if fr_kinematics is None or camera_body_forward_m is None:
             raise RuntimeError("direct FR kinematics 또는 camera body calibration이 없습니다")
-        desired_fr_to_ball_center = (
-            args.ball_radius_m + args.final_fr_to_ball_target_surface_gap_m
+        foot_xy = fr_kinematics.foot_collision_center_body_m[:2]
+        foot_radius = fr_kinematics.foot_collision_radius_m
+        desired_fr_to_ball_center = foot_radius + args.ball_radius_m + (
+            args.final_fr_to_ball_target_surface_gap_m
         )
-        current_camera_to_fr = (
-            fr_kinematics.foot_position_body_m[0] - camera_body_forward_m
-        )
-        geometry_mode = "direct_lowstate_fr_fk_surface_gap"
+        desired_ball_body_x = foot_xy[0] + desired_fr_to_ball_center
+        geometry_mode = "direct_lowstate_fr_collision_sphere_2d_surface_gap"
     else:
+        foot_xy = (
+            float(camera_body_forward_m or 0.0) + args.camera_to_fr_forward_m,
+            args.camera_body_lateral_m,
+        )
+        foot_radius = 0.0
         desired_fr_to_ball_center = (
             args.fr_to_ball_forward_m + args.final_gait_to_kick_clearance_m
         )
-        current_camera_to_fr = args.camera_to_fr_forward_m
+        desired_ball_body_x = foot_xy[0] + desired_fr_to_ball_center
         geometry_mode = "legacy_fixed_camera_to_fr"
-    desired_forward = (
-        current_camera_to_fr + desired_fr_to_ball_center
-    )
+    ball_world_xy = None if start_pose is None else body_xy_to_world(start_pose, ball_body_xy)
     return {
         "geometry_mode": geometry_mode,
         "observed_ball_ground_range_m": perception.ball_ground_range_m,
         "observed_ball_ground_forward_m": perception.ball_ground_forward_m,
-        "desired_final_ball_ground_forward_m": desired_forward,
+        "observed_ball_body_xy_m": list(ball_body_xy),
+        "observed_ball_world_xy_m": None if ball_world_xy is None else list(ball_world_xy),
+        "desired_final_ball_body_forward_m": desired_ball_body_x,
         "desired_final_fr_to_ball_center_m": desired_fr_to_ball_center,
         "desired_final_fr_to_ball_surface_gap_m": (
-            desired_fr_to_ball_center - args.ball_radius_m
+            desired_fr_to_ball_center - args.ball_radius_m - foot_radius
         ),
         "ball_radius_m": args.ball_radius_m,
-        "current_fr_foot_body_forward_m": (
-            None if fr_kinematics is None else fr_kinematics.foot_position_body_m[0]
-        ),
+        "fr_foot_collision_radius_m": foot_radius,
+        "current_fr_foot_collision_body_xy_m": list(foot_xy),
         "camera_body_forward_m": camera_body_forward_m,
-        "current_camera_to_fr_forward_m": current_camera_to_fr,
+        "camera_body_lateral_m": args.camera_body_lateral_m,
+        "camera_body_yaw_rad": args.camera_body_yaw_rad,
         "gait_to_kick_clearance_m": args.final_gait_to_kick_clearance_m,
-        "forward_m": max(0.0, perception.ball_ground_forward_m - desired_forward),
+        "forward_m": max(0.0, ball_body_xy[0] - desired_ball_body_x),
+        "lateral_error_m": ball_body_xy[1] - foot_xy[1],
     }
 
 
 def settled_fr_ball_gap(
-    dock: dict[str, Any], measured_forward_m: float,
+    dock: dict[str, Any], settled_pose: dict[str, float],
     fr_kinematics: DirectFrKinematics, args: argparse.Namespace,
 ) -> dict[str, float | bool]:
-    """마지막 camera 관측을 odometry로 전파해 정지 FR↔공 간격을 재계산한다."""
-    camera_body_forward_m = float(dock["camera_body_forward_m"])
-    ball_body_forward_m = (
-        camera_body_forward_m
-        + float(dock["observed_ball_ground_forward_m"])
-        - measured_forward_m
+    """고정된 공 world 위치를 full SE(2) odometry로 전파해 FR 간격을 검증한다."""
+    ball_world = dock.get("observed_ball_world_xy_m")
+    if not isinstance(ball_world, list) or len(ball_world) != 2:
+        raise RuntimeError("final dock의 ball world 좌표가 없습니다")
+    ball_body_xy = world_xy_to_body(
+        settled_pose, (float(ball_world[0]), float(ball_world[1])),
     )
-    fr_body_forward_m = fr_kinematics.foot_position_body_m[0]
-    center_distance_m = ball_body_forward_m - fr_body_forward_m
-    surface_gap_m = center_distance_m - args.ball_radius_m
+    foot_xy = fr_kinematics.foot_collision_center_body_m[:2]
+    dx, dy = ball_body_xy[0] - foot_xy[0], ball_body_xy[1] - foot_xy[1]
+    center_distance_m = math.hypot(dx, dy)
+    radii_m = args.ball_radius_m + fr_kinematics.foot_collision_radius_m
+    surface_gap_m = center_distance_m - radii_m
+    forward_surface_gap_m = dx - radii_m
+    lateral_error_m = dy
     foot_speed_m_s = math.sqrt(sum(
-        value * value for value in fr_kinematics.foot_speed_body_m_s
+        value * value for value in fr_kinematics.foot_collision_speed_body_m_s
     ))
     gap_ready = (
         args.final_fr_to_ball_min_surface_gap_m
-        <= surface_gap_m
+        <= forward_surface_gap_m
         <= args.final_fr_to_ball_target_surface_gap_m + args.final_fr_gap_tolerance_m
     )
+    lateral_ready = abs(lateral_error_m) <= args.final_fr_max_lateral_error_m
     return {
-        "estimated_ball_body_forward_m": ball_body_forward_m,
-        "settled_fr_foot_body_forward_m": fr_body_forward_m,
+        "estimated_ball_body_forward_m": ball_body_xy[0],
+        "estimated_ball_body_lateral_m": ball_body_xy[1],
+        "settled_fr_foot_collision_body_forward_m": foot_xy[0],
+        "settled_fr_foot_collision_body_lateral_m": foot_xy[1],
+        "fr_foot_collision_radius_m": fr_kinematics.foot_collision_radius_m,
         "estimated_fr_to_ball_center_m": center_distance_m,
         "estimated_fr_to_ball_surface_gap_m": surface_gap_m,
+        "estimated_fr_to_ball_forward_surface_gap_m": forward_surface_gap_m,
+        "estimated_fr_to_ball_lateral_error_m": lateral_error_m,
         "accepted_min_surface_gap_m": args.final_fr_to_ball_min_surface_gap_m,
         "accepted_max_surface_gap_m": (
             args.final_fr_to_ball_target_surface_gap_m + args.final_fr_gap_tolerance_m
@@ -760,6 +910,8 @@ def settled_fr_ball_gap(
         "fr_foot_speed_m_s": foot_speed_m_s,
         "fr_foot_speed_limit_m_s": args.final_fr_max_foot_speed_m_s,
         "gap_ready": gap_ready,
+        "lateral_error_limit_m": args.final_fr_max_lateral_error_m,
+        "lateral_ready": lateral_ready,
         "fr_speed_ready": foot_speed_m_s <= args.final_fr_max_foot_speed_m_s,
     }
 
@@ -768,6 +920,7 @@ def motion_settle_snapshot(
     sport_states: list[dict[str, Any]], odom_poses: list[dict[str, float]],
     *, window_s: float, max_planar_speed_m_s: float,
     max_yaw_speed_rad_s: float, max_odom_span_m: float,
+    max_odom_yaw_span_rad: float,
 ) -> dict[str, Any]:
     """neutral 뒤 최근 state/odometry window가 실제 정지인지 fail-closed로 판정한다."""
     if not sport_states or not odom_poses:
@@ -792,10 +945,12 @@ def motion_settle_snapshot(
         return {"ok": False, "reason": "settle_velocity_invalid"}
     anchor = recent_poses[-1]
     odom_span = max(planar_distance(anchor, pose) for pose in recent_poses)
+    odom_yaw_span = circular_span([pose["yaw_rad"] for pose in recent_poses])
     ok = (
         max_planar_speed <= max_planar_speed_m_s
         and max_yaw_speed <= max_yaw_speed_rad_s
         and odom_span <= max_odom_span_m
+        and odom_yaw_span <= max_odom_yaw_span_rad
     )
     return {
         "ok": ok,
@@ -806,6 +961,7 @@ def motion_settle_snapshot(
         "max_planar_speed_m_s": max_planar_speed,
         "max_yaw_speed_rad_s": max_yaw_speed,
         "odom_span_m": odom_span,
+        "odom_yaw_span_rad": odom_yaw_span,
     }
 
 
@@ -822,6 +978,7 @@ async def wait_for_motion_settle(
             max_planar_speed_m_s=args.final_settle_max_planar_speed_m_s,
             max_yaw_speed_rad_s=args.final_settle_max_yaw_speed_rad_s,
             max_odom_span_m=args.final_settle_max_odom_span_m,
+            max_odom_yaw_span_rad=args.final_settle_max_odom_yaw_span_rad,
         )
         if snapshot["ok"]:
             return snapshot
@@ -895,6 +1052,8 @@ async def joystick_pulse(
     forward_confirmation_count = 0
     yaw_confirmation_count = 0
     lateral_confirmation_count = 0
+    yaw_direction_mismatch_count = 0
+    lateral_direction_mismatch_count = 0
     arm_virtual_echo_window(
         args.virtual_echo_window, lx=lx, ly=ly, rx=rx, duration_s=VIRTUAL_ECHO_LEASE_S,
     )
@@ -942,9 +1101,9 @@ async def joystick_pulse(
                             termination = "forward_odom_target_reached_confirmed"
                             break
                     if stop_after_yaw_rad is not None:
-                        yaw_progress = abs(angle_distance(
-                            odom_poses[-1]["yaw_rad"], start_pose["yaw_rad"],
-                        ))
+                        yaw_progress = commanded_yaw_progress_rad(
+                            rx, start_pose, odom_poses[-1],
+                        )
                         yaw_confirmation_count = (
                             yaw_confirmation_count + 1
                             if yaw_progress >= stop_after_yaw_rad else 0
@@ -952,16 +1111,30 @@ async def joystick_pulse(
                         if yaw_confirmation_count >= args.odom_stop_confirm_samples:
                             termination = "yaw_odom_target_reached_confirmed"
                             break
-                    if stop_after_lateral_m is not None:
-                        lateral_reached = (
-                            abs(lateral_progress_m(start_pose, odom_poses[-1]))
-                            >= stop_after_lateral_m
+                        yaw_direction_mismatch_count = (
+                            yaw_direction_mismatch_count + 1
+                            if yaw_progress <= -min(0.02, stop_after_yaw_rad * 0.5) else 0
                         )
+                        if yaw_direction_mismatch_count >= args.odom_stop_confirm_samples:
+                            termination = "yaw_odom_direction_mismatch"
+                            break
+                    if stop_after_lateral_m is not None:
+                        lateral_progress = commanded_lateral_progress_m(
+                            lx, start_pose, odom_poses[-1],
+                        )
+                        lateral_reached = lateral_progress >= stop_after_lateral_m
                         lateral_confirmation_count = (
                             lateral_confirmation_count + 1 if lateral_reached else 0
                         )
                         if lateral_confirmation_count >= args.odom_stop_confirm_samples:
                             termination = "lateral_odom_target_reached_confirmed"
+                            break
+                        lateral_direction_mismatch_count = (
+                            lateral_direction_mismatch_count + 1
+                            if lateral_progress <= -min(0.02, stop_after_lateral_m * 0.5) else 0
+                        )
+                        if lateral_direction_mismatch_count >= args.odom_stop_confirm_samples:
+                            termination = "lateral_odom_direction_mismatch"
                             break
             watchdog, watchdog_reason = load_direct_remote_watchdog(
                 args.direct_remote_status,
@@ -1055,8 +1228,12 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         await asyncio.sleep(STATE_SETTLE_S)
         initial_state = sport_states[-1] if sport_states else None
         state_ok, state_reason = state_is_safe_to_walk(initial_state)
-        baseline, baseline_span_m = static_baseline(odom_poses)
-        odom_ok = baseline is not None and baseline_span_m <= args.max_static_baseline_span_m
+        baseline, baseline_span_m, baseline_yaw_span_rad = static_baseline(odom_poses)
+        odom_ok = (
+            baseline is not None
+            and baseline_span_m <= args.max_static_baseline_span_m
+            and baseline_yaw_span_rad <= args.max_static_baseline_yaw_span_rad
+        )
         perception, perception_reason = await stable_perception(args)
         use_tag_guidance = perception is not None and perception.tag_visible
         watchdog, watchdog_reason = load_direct_remote_watchdog(
@@ -1103,6 +1280,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "odom_baseline": baseline,
                 "odom_static_span_m": baseline_span_m,
                 "odom_static_span_threshold_m": args.max_static_baseline_span_m,
+                "odom_static_yaw_span_rad": baseline_yaw_span_rad,
+                "odom_static_yaw_span_threshold_rad": args.max_static_baseline_yaw_span_rad,
                 "perception_reason": perception_reason,
                 "perception": None if perception is None else asdict(perception),
                 "alignment_mode": "tag_guided" if use_tag_guidance else "ball_only",
@@ -1136,12 +1315,19 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "final_gait_to_kick_clearance_m": args.final_gait_to_kick_clearance_m,
                 "final_settle_timeout_s": args.final_settle_timeout_s,
                 "final_settle_window_s": args.final_settle_window_s,
+                "final_settle_max_odom_yaw_span_rad": (
+                    args.final_settle_max_odom_yaw_span_rad
+                ),
                 "virtual_echo_lease_refresh_s": VIRTUAL_ECHO_REFRESH_S,
                 "virtual_echo_lease_s": VIRTUAL_ECHO_LEASE_S,
                 "observation_timeout_s": args.observation_timeout_s,
                 "lane_axis_bearing_rad": args.lane_axis_bearing_rad,
                 "target_bearing_tolerance_rad": args.target_bearing_tolerance_rad,
                 "ball_bearing_tolerance_rad": args.ball_bearing_tolerance_rad,
+                "ball_diameter_consistency_ratio": [
+                    args.min_ball_diameter_consistency_ratio,
+                    args.max_ball_diameter_consistency_ratio,
+                ],
                 "ball_only_yaw_action_tolerance_rad": (
                     BALL_ONLY_YAW_ACTION_TOLERANCE_RAD
                 ),
@@ -1153,6 +1339,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "fr_to_ball_forward_m": args.fr_to_ball_forward_m,
                 "use_direct_fr_kinematics": args.use_direct_fr_kinematics,
                 "camera_body_forward_m": camera_body_forward_m,
+                "camera_body_lateral_m": args.camera_body_lateral_m,
+                "camera_body_yaw_rad": args.camera_body_yaw_rad,
                 "fr_kinematics_max_age_s": args.fr_kinematics_max_age_s,
                 "ball_radius_m": args.ball_radius_m,
                 "final_fr_to_ball_min_surface_gap_m": (
@@ -1162,6 +1350,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     args.final_fr_to_ball_target_surface_gap_m
                 ),
                 "final_fr_gap_tolerance_m": args.final_fr_gap_tolerance_m,
+                "fr_foot_collision_radius_m": FR_FOOT_COLLISION_RADIUS_M,
+                "final_fr_max_lateral_error_m": args.final_fr_max_lateral_error_m,
                 "final_fr_max_foot_speed_m_s": args.final_fr_max_foot_speed_m_s,
                 "final_dock_max_m": args.final_dock_max_m,
                 "final_dock_max_duration_s": args.final_dock_max_duration_s,
@@ -1176,7 +1366,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "max_lateral_probe_attempts": args.max_lateral_probe_attempts,
                 "neutral_packets_after_each_pulse": NEUTRAL_PACKET_COUNT,
                 "max_travel_m": args.max_travel_m,
+                "max_total_travel_m": args.max_total_travel_m,
                 "max_cycles": args.max_cycles,
+                "yaw_odom_response_sign_per_rx": YAW_ODOM_RESPONSE_SIGN_PER_RX,
+                "lateral_odom_response_sign_per_lx": LATERAL_ODOM_RESPONSE_SIGN_PER_LX,
                 "final_fr_kick_or_lowcmd": False,
                 "obstacle_avoidance_modified": False,
             },
@@ -1227,6 +1420,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     perception, args,
                     None if watchdog is None else watchdog.fr_foot_kinematics,
                     camera_body_forward_m,
+                    odom_poses[-1] if odom_poses else baseline,
                 )
             result["verdict"] = "DRY_RUN_READY"
             return result
@@ -1326,6 +1520,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if travel_m >= args.max_travel_m:
                 result["verdict"] = "TRAVEL_LIMIT_REACHED"
                 break
+            remaining_stage_travel_m = args.max_travel_m - travel_m
             action_lateral_sign = lateral_sign
             if lateral_response_sign is not None and use_tag_guidance:
                 current_relative_error = fr_lane_bearing_errors(
@@ -1382,9 +1577,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     dock = final_dock_plan(
                         perception, args, watchdog.fr_foot_kinematics,
                         camera_body_forward_m,
+                        latest_pose,
                     )
                     result["final_dock"] = dock
-                    if dock["forward_m"] > args.final_dock_max_m:
+                    remaining_total_m = max(
+                        0.0, args.max_total_travel_m - planar_distance(baseline, latest_pose),
+                    )
+                    result["final_dock"]["remaining_total_travel_limit_m"] = remaining_total_m
+                    if dock["forward_m"] > min(args.final_dock_max_m, remaining_total_m):
                         result["verdict"] = "FINAL_DOCK_DISTANCE_REJECTED"
                         result["kick_ready"] = {
                             "eligible": False,
@@ -1438,6 +1638,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         if pulse_result == "odom_stale_during_pulse":
                             result["verdict"] = "ODOM_STALE"
                             break
+                        if pulse_result.endswith("_odom_direction_mismatch"):
+                            result["verdict"] = "ODOM_COMMAND_DIRECTION_MISMATCH"
+                            result["reason"] = pulse_result
+                            break
                     settle = await wait_for_motion_settle(sport_states, odom_poses, args)
                     result["final_dock"]["motion_settle"] = settle
                     if "start_odom" in result["final_dock"] and odom_poses:
@@ -1445,12 +1649,19 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         settled_forward = forward_progress_m(
                             result["final_dock"]["start_odom"], settled_pose,
                         )
+                        settled_total_travel_m = planar_distance(baseline, settled_pose)
                         dock_complete = settled_forward >= dock["forward_m"] - 0.02
                         result["final_dock"].update({
                             "final_odom": settled_pose,
                             "measured_forward_m": settled_forward,
+                            "measured_total_travel_m": settled_total_travel_m,
                             "complete": dock_complete,
                         })
+                        if settled_total_travel_m > args.max_total_travel_m:
+                            dock_complete = False
+                            result["final_dock"]["complete"] = False
+                            result["verdict"] = "TOTAL_TRAVEL_LIMIT_EXCEEDED"
+                            break
                     if not settle["ok"]:
                         dock_complete = False
                         result["final_dock"]["complete"] = False
@@ -1476,9 +1687,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                             result["verdict"] = "DIRECT_FR_KINEMATICS_LOST"
                             result["reason"] = settled_watchdog_reason
                             break
+                        assert settled_pose is not None
                         final_fr_gap = settled_fr_ball_gap(
                             dock,
-                            float(result["final_dock"]["measured_forward_m"]),
+                            settled_pose,
                             settled_watchdog.fr_foot_kinematics,
                             args,
                         )
@@ -1490,6 +1702,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         if not final_fr_gap["gap_ready"]:
                             result["final_dock"]["complete"] = False
                             result["verdict"] = "FINAL_FR_GAP_OUT_OF_RANGE"
+                            break
+                        if not final_fr_gap["lateral_ready"]:
+                            result["final_dock"]["complete"] = False
+                            result["verdict"] = "FINAL_FR_LATERAL_OUT_OF_RANGE"
                             break
                 result["verdict"] = (
                     "FINAL_DOCKING_READY" if args.enable_final_dock and dock_complete
@@ -1510,7 +1726,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "lowcmd_started": False,
                     "final_dock_complete": dock_complete,
                     "direct_fr_gap_ready": (
-                        None if final_fr_gap is None else final_fr_gap["gap_ready"]
+                        None if final_fr_gap is None else (
+                            final_fr_gap["gap_ready"] and final_fr_gap["lateral_ready"]
+                        )
                     ),
                     "settled_fr_ball_gap": final_fr_gap,
                     "reason": (
@@ -1572,8 +1790,12 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 stop_after_forward_m = min(
                     args.max_forward_pulse_travel_m,
+                    remaining_stage_travel_m,
                     max(0.03, remaining_to_stage_m),
                 )
+                if stop_after_forward_m <= 0.02:
+                    result["verdict"] = "TRAVEL_LIMIT_REACHED"
+                    break
                 cycle["forward_odom_target_m"] = stop_after_forward_m
             elif reason in ("turn_to_tag_ray", "turn_to_ball_lane"):
                 stop_after_yaw_rad = min(
@@ -1588,12 +1810,16 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 # 8 cm hard cap으로 게걸음 overshoot를 막고 다음 cycle에서 재관측한다.
                 stop_after_lateral_m = min(
                     args.max_lateral_pulse_travel_m,
+                    remaining_stage_travel_m,
                     max(
                         0.04,
                         perception.ball_ground_range_m
                         * abs(cycle["fr_lane_bearing_errors"]["relative_error_rad"]),
                     ),
                 )
+                if stop_after_lateral_m <= 0.02:
+                    result["verdict"] = "TRAVEL_LIMIT_REACHED"
+                    break
                 cycle["lateral_odom_target_m"] = stop_after_lateral_m
             sent, neutral, pulse_result = await joystick_pulse(
                 pub_sub, RTC_TOPIC["WIRELESS_CONTROLLER"], lx=lx, ly=ly, rx=rx,
@@ -1616,6 +1842,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 break
             if pulse_result == "odom_stale_during_pulse":
                 result["verdict"] = "ODOM_STALE"
+                break
+            if pulse_result.endswith("_odom_direction_mismatch"):
+                result["verdict"] = "ODOM_COMMAND_DIRECTION_MISMATCH"
+                result["reason"] = pulse_result
                 break
             await asyncio.sleep(args.reobserve_settle_s)
         else:
@@ -1665,6 +1895,14 @@ def main() -> int:
     parser.add_argument("--perception-max-age-s", type=float, default=MAX_PERCEPTION_AGE_S)
     parser.add_argument("--ball-detection-max-age-s", type=float, default=MAX_BALL_DETECTION_AGE_S)
     parser.add_argument("--min-ball-confidence", type=float, default=MIN_BALL_CONFIDENCE)
+    parser.add_argument(
+        "--min-ball-diameter-consistency-ratio", type=float,
+        default=MIN_BALL_DIAMETER_CONSISTENCY_RATIO,
+    )
+    parser.add_argument(
+        "--max-ball-diameter-consistency-ratio", type=float,
+        default=MAX_BALL_DIAMETER_CONSISTENCY_RATIO,
+    )
     parser.add_argument(
         "--allow-tagless-ball-kick", action="store_true",
         help=(
@@ -1732,6 +1970,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--camera-body-lateral-m", type=float, default=0.0,
+        help="robot body origin→D435i optical center의 body +y(left) offset",
+    )
+    parser.add_argument(
+        "--camera-body-yaw-rad", type=float, default=0.0,
+        help="body +x에서 D435i optical +z로 향하는 signed yaw calibration",
+    )
+    parser.add_argument(
         "--fr-kinematics-max-age-s", type=float, default=FR_KINEMATICS_MAX_AGE_S,
     )
     parser.add_argument("--ball-radius-m", type=float, default=BALL_RADIUS_M)
@@ -1745,6 +1991,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--final-fr-gap-tolerance-m", type=float, default=FINAL_FR_GAP_TOLERANCE_M,
+    )
+    parser.add_argument(
+        "--final-fr-max-lateral-error-m", type=float,
+        default=FINAL_FR_MAX_LATERAL_ERROR_M,
+        help="정지 FR collision center와 공 중심의 body lateral 오차 상한",
     )
     parser.add_argument(
         "--final-fr-max-foot-speed-m-s", type=float, default=FINAL_FR_MAX_FOOT_SPEED_M_S,
@@ -1773,6 +2024,10 @@ def main() -> int:
     parser.add_argument(
         "--final-settle-max-odom-span-m", type=float, default=FINAL_SETTLE_MAX_ODOM_SPAN_M,
     )
+    parser.add_argument(
+        "--final-settle-max-odom-yaw-span-rad", type=float,
+        default=FINAL_SETTLE_MAX_ODOM_YAW_SPAN_RAD,
+    )
     parser.add_argument("--turn-pulse-s", type=float, default=TURN_PULSE_S)
     parser.add_argument(
         "--allow-lateral-search", action="store_true",
@@ -1800,8 +2055,16 @@ def main() -> int:
     parser.add_argument("--max-lateral-probe-attempts", type=int, default=MAX_LATERAL_PROBE_ATTEMPTS)
     parser.add_argument("--reobserve-settle-s", type=float, default=REOBSERVE_SETTLE_S)
     parser.add_argument("--max-travel-m", type=float, default=MAX_TRAVEL_M)
+    parser.add_argument(
+        "--max-total-travel-m", type=float, default=MAX_TOTAL_TRAVEL_M,
+        help="staging과 final dock을 합친 시작 pose 기준 planar displacement hard limit",
+    )
     parser.add_argument("--max-cycles", type=int, default=MAX_CYCLES)
     parser.add_argument("--max-static-baseline-span-m", type=float, default=MAX_STATIC_BASELINE_SPAN_M)
+    parser.add_argument(
+        "--max-static-baseline-yaw-span-rad", type=float,
+        default=MAX_STATIC_BASELINE_YAW_SPAN_RAD,
+    )
     parser.add_argument("--max-odom-stale-s", type=float, default=MAX_ODOM_STALE_S)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
@@ -1823,6 +2086,11 @@ def main() -> int:
         parser.error("tagless ball-only mode에서는 Tag-relative lateral probe를 실행할 수 없습니다")
     if not 0.0 < args.joystick_magnitude <= 0.20:
         parser.error("joystick magnitude는 0보다 크고 0.20 이하여야 합니다")
+    if not (
+        0.20 <= args.min_ball_diameter_consistency_ratio < 1.0
+        and 1.0 < args.max_ball_diameter_consistency_ratio <= 3.0
+    ):
+        parser.error("ball diameter consistency ratio의 min/max 범위가 유효하지 않습니다")
     if not 0.03 <= args.max_forward_pulse_travel_m <= 0.15:
         parser.error("max-forward-pulse-travel-m은 [0.03, 0.15] 범위여야 합니다")
     if not 0.50 <= args.forward_pulse_s <= 2.0:
@@ -1845,6 +2113,10 @@ def main() -> int:
         and 0.0 < args.fr_to_ball_forward_m <= 0.40
     ):
         parser.error("legacy final dock camera-to-FR은 signed, FR-to-ball은 양수 실측값이어야 합니다")
+    if not -0.30 <= args.camera_body_lateral_m <= 0.30:
+        parser.error("--camera-body-lateral-m은 [-0.30, 0.30] 범위여야 합니다")
+    if not math.isfinite(args.camera_body_yaw_rad) or abs(args.camera_body_yaw_rad) > 0.35:
+        parser.error("--camera-body-yaw-rad는 finite [-0.35, 0.35] 범위여야 합니다")
     if not 0.02 <= args.fr_kinematics_max_age_s <= 0.35:
         parser.error("--fr-kinematics-max-age-s는 [0.02, 0.35] 범위여야 합니다")
     if not 0.08 <= args.ball_radius_m <= 0.14:
@@ -1857,6 +2129,8 @@ def main() -> int:
         parser.error("FR→공 표면 최소/목표 gap 범위가 유효하지 않습니다")
     if not 0.0 <= args.final_fr_gap_tolerance_m <= 0.05:
         parser.error("--final-fr-gap-tolerance-m은 [0.0, 0.05] 범위여야 합니다")
+    if not 0.01 <= args.final_fr_max_lateral_error_m <= 0.12:
+        parser.error("--final-fr-max-lateral-error-m은 [0.01, 0.12] 범위여야 합니다")
     if not 0.01 <= args.final_fr_max_foot_speed_m_s <= 0.15:
         parser.error("--final-fr-max-foot-speed-m-s는 [0.01, 0.15] 범위여야 합니다")
     if not 0.05 <= args.final_dock_max_m <= FINAL_DOCK_MAX_M:
@@ -1873,8 +2147,15 @@ def main() -> int:
         0.02 <= args.final_settle_max_planar_speed_m_s <= 0.12
         and 0.05 <= args.final_settle_max_yaw_speed_rad_s <= 0.20
         and 0.005 <= args.final_settle_max_odom_span_m <= 0.04
+        and 0.01 <= args.final_settle_max_odom_yaw_span_rad <= 0.12
     ):
         parser.error("final settle speed/yaw/odom threshold 범위가 유효하지 않습니다")
+    if not 0.20 <= args.max_total_travel_m <= MAX_TOTAL_TRAVEL_M:
+        parser.error("--max-total-travel-m은 [0.20, 1.20] 범위여야 합니다")
+    if args.max_total_travel_m < args.max_travel_m:
+        parser.error("--max-total-travel-m은 --max-travel-m 이상이어야 합니다")
+    if not 0.01 <= args.max_static_baseline_yaw_span_rad <= 0.20:
+        parser.error("--max-static-baseline-yaw-span-rad는 [0.01, 0.20] 범위여야 합니다")
     if not 0.30 <= args.stage_range_min_m < args.stage_range_max_m <= 2.0:
         parser.error("stage range는 D435i valid range 안의 min < max여야 합니다")
     if (

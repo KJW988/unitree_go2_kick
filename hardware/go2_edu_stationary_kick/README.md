@@ -71,11 +71,12 @@ python hardware/go2_edu_stationary_kick/fetch_yolo11n_model.py
 
 python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
   --model hardware_models/yolo11n-v8.3.0.onnx --host 0.0.0.0 --port 8080 \
-  --confidence 0.015 --detection-hold-s 0.50
+  --confidence 0.015 --detection-hold-s 0.50 --target-tag-id 11
 ```
 
-같은 네트워크의 노트북 browser에서 `http://ROBOT_IP:8080`을 연다. 예를 들어 SSH가
-`192.168.0.90`이면 `http://192.168.0.90:8080`이다. 초록 bbox의 `ball`은 YOLO
+같은 네트워크의 노트북 browser에서 Jetson/PC WLAN 주소인
+`http://192.168.137.76:8080`을 연다. 이 주소는 Go2 MCU WebRTC endpoint
+`192.168.123.161`과 다르다. 초록 bbox의 `ball`은 YOLO
 confidence와 aligned-depth range를 함께 표시하고, 주황 표시의 `AprilTag: [11]`은
 벽 Tag가 동시에 보인다는 뜻이다. 초기에 이 화면으로 공과 Tag가 모두 들어오는 D435i
 각도만 조정한다. 이 stream은 보행/킥을 절대 시작하지 않는다.
@@ -91,6 +92,8 @@ YOLO의 단일-frame miss가 `ball: null`로 즉시 바뀌지 않도록 마지�
 `ball.detection_age_s`를 함께 내보낸다. staging은 이 값이 0.50초를 넘으면 거부하고 각
 관측에서 최대 5초만 기다린다. 따라서 짧은 frame drop은 흡수하지만 오래 사라진 공 위치로
 계속 움직이지 않는다. 이 변경을 적용하려면 기존 stream process를 종료하고 다시 시작해야 한다.
+stream의 기본 model도 `yolo11n-v8.3.0.onnx`이며, bbox의 영상상 지름과 5호 공 실측 지름/depth가
+일치하는 비율도 state에 기록한다. floor plane은 normal·camera 높이·inlier gate를 통과해야 한다.
 
 ## LiDAR odometry bridge
 
@@ -122,12 +125,12 @@ ownership 변경도 자동화하지 않는다.
 실물에서 gait가 확인된 경로는 WebRTC bridge의 App-equivalent
 `rt/wirelesscontroller`뿐이다. 새 `stage_go2_mcf_ball_tag_webrtc.py`는 D435i의 ball/Tag
 camera-frame geometry와 WebRTC LiDAR odometry를 gate로 쓰고, 0.20 joystick의 짧은 pulse마다
-neutral 3회와 재관측을 한다. yaw pulse는 0.50초다(이 실물에서 0.20초는 gait initiation 전에
+neutral 3회와 재관측을 한다. yaw pulse 상한은 0.80초다(이 실물에서 0.20초는 gait initiation 전에
 끝날 수 있었다). 순서는 **Tag ground-ray yaw로 body/FR 방향을 kick lane과 평행하게 정렬 →
 FR toe→ball→Tag 상대 bearing의 측방 보정 → yaw 재확인 → 전진**이다. robot yaw는 공과 Tag
 bearing을 거의 함께 움직여 둘의 상대적인 옆 간격을 해결하지 못하므로, yaw만으로 끝내지 않고
 그 다음 게걸음(`lx`)으로 FR을 공 뒤쪽 선에 맞춘다. 측방 방향은 가정하지 않고
-`--allow-lateral-search`에서만 0.50초 probe 한 번을 보낸 뒤 다음 D435i depth observation으로
+`--allow-lateral-search`에서만 최대 2.0초/0.08m의 bounded probe 한 번을 보낸 뒤 다음 D435i depth observation으로
 실제 relative-bearing 개선 여부를 확인한다.
 
 먼저 D435 perception terminal에서 stream을 유지한다.
@@ -139,7 +142,7 @@ conda activate ~/Desktop/Jiwon/soccer/unitree_go2_kick/.conda-go2-perception-py3
 unset PYTHONPATH
 python hardware/go2_edu_stationary_kick/stream_d435i_yolo_ball.py \
   --model hardware_models/yolo11n-v8.3.0.onnx --host 0.0.0.0 --port 8080 \
-  --confidence 0.015 --detection-hold-s 0.50
+  --confidence 0.015 --detection-hold-s 0.50 --target-tag-id 11
 ```
 
 이 firmware에서 WebRTC data-channel 구독은 physical remote input을 되돌려 주지 않는다.
@@ -161,7 +164,7 @@ pulse 직전에 좁은 local echo-window를 쓰고 watcher는 그 window의 **�
 보내면 구별 불가하다. 이 한계는 watchdog status JSON에도 기록되며 E-stop/physical remote는
 여전히 operator의 1차 안전 수단이다.
 watcher는 실행 중 Python code가 갱신되지 않으므로 `git pull` 뒤 반드시 재시작한다. stage는
-status의 `virtual_echo_protocol_version`과 echo-window 경로가 최신 계약과 일치하지 않으면
+status의 `virtual_echo_protocol_version=2`와 echo-window 경로가 최신 계약과 일치하지 않으면
 execute를 거부한다.
 
 ```bash
@@ -194,7 +197,8 @@ python hardware/go2_edu_stationary_kick/stage_go2_mcf_ball_tag_webrtc.py \
 
 clear floor, physical remote/E-stop, 위 direct DDS watchdog이 heartbeat와 physical input proof를
 유지하는 경우에만 명시적으로 arm한다.
-continuous drive가 아니라 최대 5개의 bounded pulse와 start-pose에서 최대 0.35m travel만
+continuous drive가 아니라 통합 runner 기준 최대 6개의 bounded pulse와 start-pose에서
+staging 최대 0.35m, staging+final dock 최대 1.20m travel만
 허용한다. `CAMERA_STAGING_READY`가 아닌 모든 결과는 neutral로 중단한다. 이 성공은 실측
 camera FR lane template의 `kick_ready.eligible`일 뿐 LowCmd를 자동 시작하지 않는다. 이 EDU
 firmware에서 MCF→LowCmd release와 LowCmd 종료 뒤 MCF 복귀는 토크 공백/떨림/주저앉음을 실제로
@@ -226,23 +230,28 @@ LiDAR-odometry bounded final dock으로 넘긴다. joystick magnitude 0.20과 �
 hard limit은 그대로다.
 
 통합 runner는 고정 `camera→FR` 거리 대신 direct DDS `rt/lowstate`+Go2 URDF FK로
-현재 FR foot body x를 매번 다시 읽는다. D435i mount는 body에 고정되므로, 동시
+현재 FR foot collision sphere의 body x/y를 매번 다시 읽는다. D435i mount는 body에 고정되므로, 동시
 실측한 `FR body x=0.185136m` 와 렌즈가 FR보다 0.15m 앞이라는 값에서
 `camera body x=0.335136m`를 1회 보정했다. 5호 공 반지름 0.11m를 따로 반영해
-`FR toe→공 표면 0.15m`, 즉 `FR→공 중심 0.26m`를 final dock 목표로 쓴다.
-정지 뒤 fresh FK로 다시 계산한 표면 gap이 0.10–0.17m이고 FR foot speed가
+`FR toe→공 표면 0.15m`에 5호 공 반지름 0.11m와 URDF foot 반지름 0.022m를 더한
+`FR collision center→공 중심 0.282m`를 final dock 목표로 쓴다.
+정지 뒤 frozen 공 world 좌표를 LiDAR full SE(2)로 다시 투영한 전방 표면 gap이
+0.10–0.17m, 횡오차가 0.05m 이하이고 FR foot speed가
 0.05m/s 이하인 경우에만 `FINAL_DOCKING_READY`가 된다. 실패하면 LowCmd child를
 시작하지 않는다.
 
 실물 최종 dock에서 FR→공 중심 약 0.20m까지 gait를 유지하자 마지막 FR swing이
-LowCmd보다 먼저 공을 접촉했다. 따라서 동적 FK 목표는 중심 0.26m(표면 gap 0.15m)로
+LowCmd보다 먼저 공을 접촉했다. 따라서 동적 FK 목표는 collision-center 기준 0.282m
+(foot radius 0.022m + ball radius 0.11m + 표면 gap 0.15m)로
 두어 기존 접촉점보다 0.06m 보수적으로 멈춘다. 이것은 이전 약한 접촉 지점
 0.29m보다는 0.03m 가깝다. duration hard limit은 6.0초로 유지하되 LiDAR odometry
 목표 도달 즉시 neutralize한다.
-duration hard limit은 6.0초로 유지하되 LiDAR odometry 목표 도달 즉시 neutralize한다.
 neutral 뒤에는 최근 0.40초의 MCF planar/yaw velocity와 LiDAR odometry span이 모두 정지
 gate를 통과해야만 LowCmd child를 시작한다. 이 clearance는 첫 보수값이며 실물 접촉/미접촉
 결과로만 줄인다.
+평면 이동뿐 아니라 같은 window의 odom yaw span도 0.04rad 이하여야 한다. staging
+0.35m와 final dock의 별도 상한 외에, 시작 pose 기준 전체 planar displacement 1.20m도
+추가 hard limit으로 적용한다.
 
 5초 pulse는 Python scheduling 지연으로 nominal wall time보다 길어질 수 있다. 고정 expiry가
 먼저 끝나 virtual `ly=0.2` echo를 물리 remote로 오인하지 않도록, stage는 active 동안
@@ -293,14 +302,16 @@ python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py \
   --stage-max-forward-pulse-travel-m 0.15 \
   --camera-to-fr-forward-m -0.15 --fr-to-ball-forward-m 0.18 \
   --camera-body-forward-m 0.335136277245694 \
+  --camera-body-lateral-m 0.0 --camera-body-yaw-rad 0.0 \
   --ball-radius-m 0.11 \
   --final-fr-to-ball-min-surface-gap-m 0.10 \
   --final-fr-to-ball-target-surface-gap-m 0.15 \
   --final-fr-gap-tolerance-m 0.02 \
+  --final-fr-max-lateral-error-m 0.05 \
   --final-fr-max-foot-speed-m-s 0.05 \
   --final-settle-timeout-s 2.0 \
   --final-dock-max-m 0.85 --final-dock-max-duration-s 6.0 \
-  --max-stage-cycles 6 --max-stage-travel-m 0.35 \
+  --max-stage-cycles 6 --max-stage-travel-m 0.35 --max-total-travel-m 1.20 \
   --interface eth0 \
   --lowcmd-python .conda-unitree-sdk-py311/bin/python \
   --trajectory "$trajectory" --kp 60 --kd 5 \
@@ -312,6 +323,11 @@ python hardware/go2_edu_stationary_kick/rough_stage_then_fr_kick.py \
   --execute \
   --operator-confirm ROUGH_STAGE_THEN_FR_KICK_ESTOP_READY
 ```
+
+LowCmd child는 확대된 1.3x target을 만든 **뒤** Go2 URDF 관절 위치·속도 한계를 다시
+검사한다. 실행 중에는 fresh LowState, tracking error, joint speed, body tilt, publisher thread,
+watcher heartbeat 및 새로운 물리 리모컨 event를 계속 검사한다. 실패하면 fresh actual pose를
+full gain으로 최대 5초 유지한 뒤 종료하며, 자동 MCF handback을 주장하지 않는다.
 
 ```bash
 status=hardware_measurements/go2_direct_remote_watchdog.json
@@ -510,7 +526,7 @@ recovery를 임의로 변경하지 않는다.
 
 정지 harness에서 이미 학습·검증한 FR preset의 joint delta를 그대로 재생하면서 매 tick의
 target/실제 joint state/IMU를 JSON으로 기록하는 별도 runner다. simulator default pose를
-실물에 보내지 않고, 매 실행 시 4초간 읽은 standing median을 시작점으로 쓴다. 보행·공·Tag
+실물에 보내지 않고, 매 실행 시 최근 1초 stable window의 standing median을 시작점으로 쓴다. 보행·공·Tag
 입력은 하지 않는다. `--execute` 전 preview는 LowCmd publisher를 만들지 않는다.
 
 ```bash
@@ -542,6 +558,7 @@ handoff만 먼저 확인한다. 이 단계에서 robot이 자세를 유지하고
 ```bash
 python3 hardware/go2_edu_stationary_kick/live_baseline_fr_preset.py \
   --interface eth0 --trajectory hardware_measurements/go2_fr_kick_teacher_x10.npz \
+  --direct-remote-status hardware_measurements/go2_direct_remote_watchdog.json \
   --kp 60 --kd 5 --execute --release-motion-owner \
   --release-without-stand-down --handoff-blend-s 1.2 --prehold-s 1 \
   --hold-only --hold-only-s 3 --hold-after-s 20 \

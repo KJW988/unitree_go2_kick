@@ -2,6 +2,27 @@
 
 Log of all changes made during the Go2 Kick RL debugging and implementation task.
 
+## 2026-07-30 — MCF 보행 방향·FR 2D docking·LowCmd runtime gate 수정
+
+- 실물 응답과 반대였던 tag-guided yaw command 부호를 ball-only와 통일했다. yaw/lateral
+  odometry 목표는 절댓값이 아니라 `+rx→-yaw`, `+lx→-body lateral` 실측 부호의 진행만
+  인정하고, 반대 방향이 연속 확인되면 즉시 neutralize한다.
+- ±π 근처 odometry yaw baseline을 scalar median 대신 circular mean/span으로 바꾸고,
+  preflight yaw speed와 final settle odom yaw span gate를 추가했다.
+- D435i 공 위치를 camera bearing/range와 고정 mount x/y/yaw로 body 2D에 놓고, 마지막
+  관측을 LiDAR full SE(2)로 전파한다. Go2 URDF foot collision sphere 반지름 0.022m를
+  포함해 전방 표면 gap 0.10–0.17m와 lateral 오차 0.05m를 모두 통과해야 kick-ready다.
+- final dock까지 포함한 시작 pose 기준 전체 planar displacement 1.20m hard limit을 추가했다.
+- YOLO stream 기본 artifact를 `yolo11n-v8.3.0.onnx`로 바꾸고 target Tag ID, floor-plane
+  plausibility 및 bbox/depth/5호 공 지름 일관성 값을 state에 추가했다. staging은 여러
+  관측의 median/circular mean을 사용하고 metric-size 불일치를 거부한다.
+- 1.3x FR swing 적용 뒤 SDK-order target을 Go2 URDF joint position/velocity limit로 다시
+  검사한다. LowCmd 중 LowState freshness, tracking error, joint speed, tilt, publisher thread,
+  direct remote heartbeat/event를 감시하고 실패 시 actual pose bounded hold 후 종료한다.
+- physical-remote watcher protocol을 2로 올렸으므로 기존 watcher process는 반드시 재시작한다.
+  Go2 MCU WebRTC endpoint `192.168.123.161`과 현재 Jetson/PC WLAN browser 주소
+  `192.168.137.76:8080`을 문서에서 분리했다.
+
 ## 2026-07-29 — 보행 잔동작 억제 및 adaptive MCF→LowCmd kick 전환
 
 - 통합 runner의 target-ray deadband를 0.04rad로 두어 실물 yaw gait 해상도보다 작은 회전
