@@ -76,10 +76,6 @@ FINAL_FR_MAX_LATERAL_ERROR_M = 0.05
 TURN_PULSE_S = 0.80
 LATERAL_PULSE_S = 2.00
 MAX_LATERAL_PULSE_TRAVEL_M = 0.08
-# ball-only 실물에서 0.0317 rad 오차는 0.8 s yaw gait의 최소 해상도보다 작아
-# 회전이 오히려 공을 FOV 밖으로 밀었다. strict kick gate는 그대로 두고
-# high-level yaw action만 0.04 rad 이하에서 억제한다.
-BALL_ONLY_YAW_ACTION_TOLERANCE_RAD = 0.04
 MIN_ODOM_STOP_ACTIVE_S = 0.60
 ODOM_STOP_CONFIRM_SAMPLES = 3
 # camera staging까지 수 cm만 남으면 작은 pulse가 gait initiation을 반복한다. 이 구간은
@@ -678,31 +674,36 @@ def load_fr_lane_template(path: Path | None, tag_id: int) -> tuple[FrLaneTemplat
 
 def action_for(
     perception: Perception, args: argparse.Namespace, lane: FrLaneTemplate, lateral_sign: float,
-    use_tag_guidance: bool,
+    use_tag_guidance: bool, fr_kinematics: DirectFrKinematics | None = None,
+    camera_body_forward_m: float | None = None,
 ) -> tuple[str, float, float, float]:
-    """FR lane 방향 yaw를 먼저 맞춘 뒤 lateral probe로 FR→ball lane을 보정한다.
+    """관측 가능한 yaw만 회전시키고 실제 FR→ball 횡오차는 게걸음으로 보정한다.
 
     ball bearing을 0으로 맞추지 않는다. FR의 lateral offset 때문에 valid kick lane의 ball은
     camera image 중앙에서 벗어날 수 있다. 먼저 Tag ground ray를 template 값에 맞춰 body/FR
     방향을 kick lane과 평행하게 만든다. robot yaw는 ball/Tag bearing을 거의 함께 변화시키므로
-    그 다음 남는 ``ball - Tag`` 상대 bearing 오차는 작은 ``lx`` pulse로 시험해야 한다.
-    lateral 뒤 Tag ray는 다시 달라질 수 있으므로 다음 cycle에서 yaw를 재확인한다. joystick
-    lateral 부호는 관측으로만 정하고 연속 이동으로 가정하지 않는다.
+    그 다음 direct FR FK와 depth 공 좌표의 횡오차는 ``lx``로 보정한다. Tag가 없으면 한 점인
+    공만으로 yaw 오차와 평행이동 오차를 구분할 수 없으므로 현재 yaw를 보존하고 direct FR
+    횡오차만 보정한다. ``+lx``가 body -Y로 이동한다는 실물 odometry 계약을 사용한다.
     """
+    direct_lateral_error: float | None = None
+    if args.use_direct_fr_kinematics:
+        if fr_kinematics is None or camera_body_forward_m is None:
+            return "direct_fr_geometry_required", 0.0, 0.0, 0.0
+        direct_lateral_error = float(final_dock_plan(
+            perception, args, fr_kinematics, camera_body_forward_m,
+        )["lateral_error_m"])
+
     if not use_tag_guidance:
-        errors = ball_only_lane_errors(perception, lane, args.lane_axis_bearing_rad)
-        ball_tolerance = min(
-            lane.ball_bearing_tolerance_rad, args.ball_bearing_tolerance_rad,
-        )
-        ball_action_tolerance = max(
-            ball_tolerance, BALL_ONLY_YAW_ACTION_TOLERANCE_RAD,
-        )
-        if abs(errors["ball_error_rad"]) > ball_action_tolerance:
-            # 2026-07-29 실물 response: +rx는 camera ball bearing을 감소시켰다.
-            # error=(observed-desired)와 같은 rx 부호를 보내야 오차가 0으로 줄어든다.
+        if direct_lateral_error is None:
+            return "tagless_direct_fr_geometry_required", 0.0, 0.0, 0.0
+        if abs(direct_lateral_error) > args.final_fr_max_lateral_error_m:
+            # ball_y-foot_y만큼 body가 이동해야 한다. 실물 odometry에서 +lx는 body -Y이므로
+            # joystick 부호는 필요한 body lateral displacement와 반대다.
             return (
-                "turn_to_ball_lane", 0.0, 0.0,
-                math.copysign(args.joystick_magnitude, errors["ball_error_rad"]),
+                "lateral_to_fr_ball",
+                -math.copysign(args.joystick_magnitude, direct_lateral_error),
+                0.0, 0.0,
             )
         if perception.ball_range_m < lane.desired_ball_range_m - lane.range_tolerance_m:
             return "ball_too_close_no_reverse", 0.0, 0.0, 0.0
@@ -721,11 +722,20 @@ def action_for(
     )
     target_error = errors["target_error_rad"]
     if abs(target_error) > target_action_tolerance:
-        # 같은 D435i bearing 오차에는 ball-only와 같은 부호를 적용한다. 실물에서
-        # +rx가 camera bearing을 감소시켰으므로 error=(observed-desired)와 같은 부호다.
+        # 실물에서 +rx가 camera Tag bearing을 감소시켰으므로
+        # error=(observed-desired)와 같은 부호다.
         return "turn_to_tag_ray", 0.0, 0.0, math.copysign(args.joystick_magnitude, target_error)
+    if (
+        direct_lateral_error is not None
+        and abs(direct_lateral_error) > args.final_fr_max_lateral_error_m
+    ):
+        return (
+            "lateral_to_fr_ball",
+            -math.copysign(args.joystick_magnitude, direct_lateral_error),
+            0.0, 0.0,
+        )
     # yaw 뒤에도 남는 ball-vs-Tag 상대 bearing은 FR toe가 공 중심 뒤 선상에 없다는 뜻이다.
-    if abs(errors["relative_error_rad"]) > min(
+    if direct_lateral_error is None and abs(errors["relative_error_rad"]) > min(
         lane.ball_bearing_tolerance_rad, lane.target_bearing_tolerance_rad,
         args.ball_bearing_tolerance_rad,
     ):
@@ -1328,9 +1338,6 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     args.min_ball_diameter_consistency_ratio,
                     args.max_ball_diameter_consistency_ratio,
                 ],
-                "ball_only_yaw_action_tolerance_rad": (
-                    BALL_ONLY_YAW_ACTION_TOLERANCE_RAD
-                ),
                 "tagless_ball_kick_opt_in": args.allow_tagless_ball_kick,
                 "forward_pulse_s": args.forward_pulse_s,
                 "max_forward_pulse_travel_m": args.max_forward_pulse_travel_m,
@@ -1386,6 +1393,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         if not use_tag_guidance and not args.allow_tagless_ball_kick:
             result["verdict"] = "TAG_GUIDANCE_REQUIRED"
             return result
+        if not use_tag_guidance and (
+            not args.use_direct_fr_kinematics
+            or watchdog is None
+            or watchdog.fr_foot_kinematics is None
+            or camera_body_forward_m is None
+        ):
+            result["verdict"] = "TAGLESS_DIRECT_FR_GEOMETRY_REQUIRED"
+            return result
         result["alignment_mode"] = "tag_guided" if use_tag_guidance else "ball_only"
         result["target_direction_verified"] = use_tag_guidance
         # lateral joystick의 + 부호가 camera ball-bearing을 어느 방향으로 바꾸는지는
@@ -1406,6 +1421,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         result["lateral_probe_results"] = []
         first_action = action_for(
             perception, args, lane_template, lateral_sign, use_tag_guidance,
+            None if watchdog is None else watchdog.fr_foot_kinematics,
+            camera_body_forward_m,
         )
         if not args.execute:
             result["dry_run_next_action"] = {
@@ -1533,6 +1550,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 lateral_sign = action_lateral_sign
             reason, lx, ly, rx = action_for(
                 perception, args, lane_template, action_lateral_sign, use_tag_guidance,
+                watchdog.fr_foot_kinematics, camera_body_forward_m,
+            )
+            direct_fr_ball_geometry = (
+                final_dock_plan(
+                    perception, args, watchdog.fr_foot_kinematics,
+                    camera_body_forward_m, latest_pose,
+                )
+                if args.use_direct_fr_kinematics else None
             )
             cycle: dict[str, Any] = {
                 "index": cycle_index,
@@ -1544,6 +1569,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "travel_m": travel_m,
                 "reason": reason,
                 "joystick": {"lx": lx, "ly": ly, "rx": rx},
+                "direct_fr_ball_geometry": direct_fr_ball_geometry,
             }
             result["cycles"].append(cycle)
             if reason == "camera_staging_ready":
@@ -1567,10 +1593,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         )
                     )
                 else:
-                    strict_lane_ready = abs(strict_errors["ball_error_rad"]) <= min(
-                        lane_template.ball_bearing_tolerance_rad,
-                        args.ball_bearing_tolerance_rad,
-                    )
+                    assert direct_fr_ball_geometry is not None
+                    strict_lane_ready = abs(
+                        direct_fr_ball_geometry["lateral_error_m"]
+                    ) <= args.final_fr_max_lateral_error_m
+                if direct_fr_ball_geometry is not None:
+                    strict_lane_ready = strict_lane_ready and abs(
+                        direct_fr_ball_geometry["lateral_error_m"]
+                    ) <= args.final_fr_max_lateral_error_m
                 dock_complete = not args.enable_final_dock
                 final_fr_gap: dict[str, float | bool] | None = None
                 if args.enable_final_dock:
@@ -1747,7 +1777,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if reason == "ball_too_close_no_reverse":
                 result["verdict"] = reason.upper()
                 break
-            if reason == "lateral_to_fr_lane" and not args.allow_lateral_search:
+            if reason in ("direct_fr_geometry_required", "tagless_direct_fr_geometry_required"):
+                result["verdict"] = reason.upper()
+                break
+            if reason in ("lateral_to_fr_lane", "lateral_to_fr_ball") and not args.allow_lateral_search:
                 result["verdict"] = "LATERAL_SEARCH_NOT_ARMED"
                 break
             if reason == "lateral_to_fr_lane" and not lateral_sign_confirmed:
@@ -1772,7 +1805,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 }
             duration_s = (
                 args.forward_pulse_s if reason == "forward"
-                else args.turn_pulse_s if reason in ("turn_to_tag_ray", "turn_to_ball_lane")
+                else args.turn_pulse_s if reason == "turn_to_tag_ray"
                 else args.lateral_pulse_s
             )
             stop_after_forward_m = None
@@ -1797,25 +1830,25 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     result["verdict"] = "TRAVEL_LIMIT_REACHED"
                     break
                 cycle["forward_odom_target_m"] = stop_after_forward_m
-            elif reason in ("turn_to_tag_ray", "turn_to_ball_lane"):
+            elif reason == "turn_to_tag_ray":
                 stop_after_yaw_rad = min(
-                    abs(cycle["fr_lane_bearing_errors"][
-                        "target_error_rad" if use_tag_guidance else "ball_error_rad"
-                    ]),
+                    abs(cycle["fr_lane_bearing_errors"]["target_error_rad"]),
                     0.20,
                 )
                 cycle["yaw_odom_target_rad"] = stop_after_yaw_rad
-            elif reason == "lateral_to_fr_lane":
+            elif reason in ("lateral_to_fr_lane", "lateral_to_fr_ball"):
                 # small-angle ground approximation: lateral ~= range * bearing error.
                 # 8 cm hard cap으로 게걸음 overshoot를 막고 다음 cycle에서 재관측한다.
+                lateral_target_m = (
+                    abs(direct_fr_ball_geometry["lateral_error_m"])
+                    if reason == "lateral_to_fr_ball" and direct_fr_ball_geometry is not None
+                    else perception.ball_ground_range_m
+                    * abs(cycle["fr_lane_bearing_errors"]["relative_error_rad"])
+                )
                 stop_after_lateral_m = min(
                     args.max_lateral_pulse_travel_m,
                     remaining_stage_travel_m,
-                    max(
-                        0.04,
-                        perception.ball_ground_range_m
-                        * abs(cycle["fr_lane_bearing_errors"]["relative_error_rad"]),
-                    ),
+                    max(0.03, lateral_target_m),
                 )
                 if stop_after_lateral_m <= 0.02:
                     result["verdict"] = "TRAVEL_LIMIT_REACHED"

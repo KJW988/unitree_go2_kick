@@ -346,6 +346,12 @@ D435i aligned-depth/floor plane을 사용한다. Tag가 보이면 기존 tag-gui
 위치와 거리는 확인하지만 공이 날아갈 target 방향은 확인할 수 없다. 출력에도
 `target_direction_verified=false`가 남는다.
 
+정렬 우선순위는 yaw와 lateral을 구분한다. Tag가 보이면 Tag ground ray가 허용오차를
+벗어났을 때만 회전하고, 그 뒤 direct FR collision sphere와 depth 공 중심의 body-frame
+횡오차를 게걸음으로 줄인다. Tag가 없으면 공 한 점만으로 yaw와 횡이동을 구분할 수 없으므로
+현재 body yaw를 보존하고 direct FR 횡오차만 게걸음으로 보정한다. 따라서 tagless 실행에는
+`--use-direct-fr-kinematics`와 fresh protocol-2 watchdog가 필수다.
+
 먼저 motion 없는 dry-run으로 `dry_run_next_action`, `ball_error_rad`, final dock 거리를 확인한다.
 `--ball-bearing-tolerance-rad 0.03`은 captured template의 tolerance를 완화하지 않고 더 엄격한
 runtime 상한으로만 작동한다.

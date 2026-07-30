@@ -31,7 +31,7 @@ class StageGeometryTest(unittest.TestCase):
         self.assertGreater(stage.commanded_lateral_progress_m(0.2, baseline, pose(0.0, -0.1, 0.0)), 0.0)
         self.assertLess(stage.commanded_lateral_progress_m(0.2, baseline, pose(0.0, 0.1, 0.0)), 0.0)
 
-    def test_camera_bearing_error_uses_measured_yaw_response_sign(self) -> None:
+    def test_tag_yaw_uses_measured_response_and_tagless_uses_fr_lateral(self) -> None:
         lane = stage.FrLaneTemplate(11, 0.70, 0.10, 0.22, 0.0, 0.03, 0.03)
         args = SimpleNamespace(
             lane_axis_bearing_rad=0.0,
@@ -39,21 +39,69 @@ class StageGeometryTest(unittest.TestCase):
             target_bearing_tolerance_rad=0.03,
             joystick_magnitude=0.2,
             camera_stage_entry_slack_m=0.04,
+            use_direct_fr_kinematics=True,
+            camera_body_yaw_rad=0.0,
+            camera_body_lateral_m=0.0,
+            ball_radius_m=0.11,
+            final_fr_to_ball_target_surface_gap_m=0.15,
+            final_gait_to_kick_clearance_m=0.11,
+            camera_to_fr_forward_m=-0.15,
+            fr_to_ball_forward_m=0.18,
+            final_fr_max_lateral_error_m=0.05,
         )
-        # 실물 response에서 +rx는 camera bearing을 감소시킨다. 따라서 observed-desired가
-        # 양수면 +rx, 음수면 -rx여야 하며 Tag/ball-only가 같은 부호 계약을 사용해야 한다.
+        fr = stage.DirectFrKinematics(
+            1.0, 10, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            (0.202, -0.1, -0.3), (0.0, 0.0, 0.0),
+            (0.2, -0.1, -0.3), (0.0, 0.0, 0.0), 0.022,
+        )
+        # 실물 response에서 +rx는 camera bearing을 감소시킨다. Tag가 있으면 이 부호로
+        # yaw를 맞추고, Tag가 없으면 yaw를 추정하지 않고 direct FR 횡오차로 게걸음한다.
         tag_perception = stage.Perception(
             0.90, 0.5, 0.26, 0.10, 1.0, True, 0.01, 0.0, 0.95, 0.90, 1.0,
         )
-        reason, _, _, rx = stage.action_for(tag_perception, args, lane, 1.0, True)
+        reason, _, _, rx = stage.action_for(
+            tag_perception, args, lane, 1.0, True, fr, 0.335,
+        )
         self.assertEqual(reason, "turn_to_tag_ray")
         self.assertGreater(rx, 0.0)
         ball_perception = stage.Perception(
-            0.90, 0.5, 0.10, None, None, False, 0.01, 0.0, 0.95, 0.90, 1.0,
+            0.90, 0.5, 0.0, None, None, False, 0.01, 0.0, 0.95, 0.90, 1.0,
         )
-        reason, _, _, rx = stage.action_for(ball_perception, args, lane, 1.0, False)
-        self.assertEqual(reason, "turn_to_ball_lane")
-        self.assertLess(rx, 0.0)
+        reason, lx, _, rx = stage.action_for(
+            ball_perception, args, lane, 1.0, False, fr, 0.335,
+        )
+        self.assertEqual(reason, "lateral_to_fr_ball")
+        self.assertLess(lx, 0.0)
+        self.assertEqual(rx, 0.0)
+
+        aligned_tag_perception = stage.Perception(
+            0.90, 0.5, 0.0, 0.0, 1.0, True, 0.01, 0.0, 0.95, 0.90, 1.0,
+        )
+        reason, lx, _, rx = stage.action_for(
+            aligned_tag_perception, args, lane, 1.0, True, fr, 0.335,
+        )
+        self.assertEqual(reason, "lateral_to_fr_ball")
+        self.assertLess(lx, 0.0)
+        self.assertEqual(rx, 0.0)
+
+        # 2026-07-30 실물 state: 공과 FR 횡오차가 약 4.1 cm라 허용범위 안이다.
+        # Tag가 없어도 불필요한 yaw/lateral 없이 staging-ready여야 한다.
+        current_ball_bearing = math.atan2(0.08154896992682228, 0.8892589271604588)
+        current_ball_ground_range = math.hypot(0.08154896992682228, 0.8892589271604588)
+        current_fr = stage.DirectFrKinematics(
+            1.0, 10, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            (0.229, -0.122, -0.312), (0.0, 0.0, 0.0),
+            (0.228, -0.122, -0.314), (0.0, 0.0, 0.0), 0.022,
+        )
+        current_perception = stage.Perception(
+            0.759, 0.385, current_ball_bearing, None, None, False,
+            0.01, 0.0, current_ball_ground_range, 0.8892589271604588, 1.007,
+        )
+        reason, lx, ly, rx = stage.action_for(
+            current_perception, args, lane, 1.0, False, current_fr, 0.335,
+        )
+        self.assertEqual(reason, "camera_staging_ready")
+        self.assertEqual((lx, ly, rx), (0.0, 0.0, 0.0))
 
     def test_walk_preflight_rejects_nonzero_yaw_speed(self) -> None:
         state = {

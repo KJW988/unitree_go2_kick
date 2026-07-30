@@ -2,6 +2,14 @@
 
 Log of all changes made during the Go2 Kick RL debugging and implementation task.
 
+## 2026-07-30 — Tagless 정렬에서 yaw 추정을 제거하고 direct FR 게걸음 우선
+
+- Tag-guided stage는 Tag 축 오차가 허용범위를 벗어난 경우에만 회전하고, 이후 D435i 공
+  지면 좌표와 direct LowState/URDF FR collision sphere의 횡오차를 게걸음으로 보정한다.
+- Tag가 없는 경우 공 bearing 하나로 yaw를 추정하지 않는다. 현재 body yaw를 보존하며
+  direct FR 횡오차를 `lx`와 signed odometry로 줄이고, fresh FR FK가 없으면 fail-closed한다.
+- strict kick gate와 lateral pulse 거리도 같은 direct FR 횡오차를 사용하도록 통일했다.
+
 ## 2026-07-30 — MCF 보행 방향·FR 2D docking·LowCmd runtime gate 수정
 
 - 실물 응답과 반대였던 tag-guided yaw command 부호를 ball-only와 통일했다. yaw/lateral
